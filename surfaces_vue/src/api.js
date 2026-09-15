@@ -23,6 +23,13 @@ export const getSettings = () => request("/v1/settings");
 export const getPersonas = async () => (await request("/v1/personas")).personas || [];
 export const getSessions = async () => (await request("/v1/sessions")).sessions || [];
 export const getMessages = async (id) => (await request(`/v1/sessions/${encodeURIComponent(id)}/messages`)).messages || [];
+export const getRecentWorkspaces = async () => (await request("/v1/workspaces/recent")).workspaces || [];
+export const pickFolderViaServer = async () => {
+  const result = await request("/v1/workspaces/pick", { method: "POST" });
+  return result.ok && result.path ? result.path : null;
+};
+export const openWorkspace = (path) => request("/v1/workspaces/open", json("POST", { path, create: false }));
+export const createTempWorkspace = (id) => request("/v1/workspaces/temp", json("POST", { session_id: id, git: true }));
 export const setSessionFlags = (id, flags) => request(`/v1/sessions/${encodeURIComponent(id)}`, json("PATCH", flags));
 export const deleteSession = (id) => request(`/v1/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
 

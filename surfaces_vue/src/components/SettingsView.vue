@@ -45,7 +45,31 @@ const fieldLabels = { api_key: "API 密钥", base_url: "API 地址", endpoint: "
 const fieldHelps = { api_key: "用于访问该模型服务，密钥只保存在本机。", base_url: "模型服务的接口地址。", endpoint: "模型服务的访问地址。", organization: "可选的组织标识。", project: "可选的项目标识。", method: "填写需要使用的连接或认证方式。", model: "填写此提供商支持的模型名称。", region: "填写服务所在区域。" };
 function fieldLabel(field) { return fieldLabels[field.key] || field.label || "配置项"; }
 function fieldHelp(field) { return fieldHelps[field.key] || `填写 ${fieldLabel(field)}，保存后用于连接模型服务。`; }
-function personaSummary(persona) { return persona.requires_folder ? "需要绑定工作目录的项目型智能体" : "可直接开始对话的通用智能体"; }
+function personaSummary(persona) {
+  const id = String(persona.id || "").toLowerCase();
+  const known = [
+    [["cowork", "general"], "适合综合办公：联网调研、处理文件和表格、分析数据，以及撰写报告、邮件和方案。"],
+    [["chat"], "适合快速问答、概念解释、翻译、总结和头脑风暴，侧重直接交流。"],
+    [["code", "develop", "engineer"], "适合软件开发：阅读和修改代码、运行命令、排查错误、重构项目并修复构建问题。"],
+    [["security", "secure", "secops"], "适合安全工作：检查代码与配置风险、分析漏洞、审阅权限并给出加固建议。"],
+    [["devops", "sre", "infra"], "适合运维与基础设施：处理部署、持续集成、容器、云资源和故障排查。"],
+    [["research"], "适合联网调研：搜集和核实资料、比较来源，并整理成带依据的研究报告。"],
+    [["data", "analyst"], "适合数据分析：清洗表格、统计汇总、发现趋势，并输出结果表和分析结论。"],
+    [["writer", "content"], "适合内容创作：撰写、改写和润色文档、汇报稿、邮件及其他文字材料。"],
+    [["sales", "crm"], "适合销售工作：整理客户与线索、分析跟进情况，并生成销售摘要和沟通材料。"],
+    [["support", "service"], "适合客户支持：归纳问题、查询资料、起草回复并整理常见问题。"],
+  ].find(([keys]) => keys.some((key) => id.includes(key)));
+  if (known) return known[1];
+  const tools = (persona.tools || []).join(" ").toLowerCase();
+  const capabilities = [];
+  if (/browser|web|search/.test(tools)) capabilities.push("联网检索和资料调研");
+  if (/file|pdf|document/.test(tools)) capabilities.push("读取、整理和生成文件");
+  if (/shell|code|patch|command/.test(tools)) capabilities.push("执行命令和处理代码");
+  if (/sheet|excel|csv|data/.test(tools)) capabilities.push("表格与数据分析");
+  if (/mail|calendar|slack|connector|mcp/.test(tools)) capabilities.push("通过连接器处理外部服务");
+  if (capabilities.length) return `可用于${capabilities.join("、")}。`;
+  return persona.requires_folder ? "适合围绕指定工作目录执行项目任务，包括读取资料、生成内容和完成项目交付。" : "适合问答、内容整理、分析和文档生成等日常任务。";
+}
 onMounted(load);
 </script>
 

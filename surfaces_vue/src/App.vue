@@ -1,11 +1,14 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { deleteSession, getHealth, getMessages, getPersonas, getSessions, getSettings, setSessionFlags, Session } from "./api";
+import { createTempWorkspace, deleteSession, getHealth, getMessages, getPersonas, getSessions, getSettings, setSessionFlags, Session } from "./api";
 import AuditView from "./components/AuditView.vue";
 import AutomationsView from "./components/AutomationsView.vue";
 import BoardView from "./components/BoardView.vue";
 import ConnectorsView from "./components/ConnectorsView.vue";
 import SettingsView from "./components/SettingsView.vue";
+import QuestionPrompt from "./components/QuestionPrompt.vue";
+import FolderDialog from "./components/FolderDialog.vue";
+import SelectMenu from "./components/SelectMenu.vue";
 
 const newId = () => crypto.randomUUID?.().slice(0, 12) || Math.random().toString(36).slice(2, 14);
 const sessions = ref([]);
@@ -18,7 +21,10 @@ const model = ref("gpt-5.6-sol");
 const models = ref([]);
 const mode = ref("interactive");
 const draft = ref("");
+const sendGate = ref("");
+const folderError = ref("");
 const connected = ref(false);
+const sessionReady = ref(false);
 const running = ref(false);
 const streaming = ref("");
 const status = ref("正在连接本地服务…");
@@ -40,10 +46,19 @@ const title = computed(() => activeSession.value?.title || "新对话");
 const pageTitles = { automations: "自动化", connectors: "连接器", audit: "活动审计", board: "任务看板", settings: "设置" };
 const pageTitle = computed(() => surface.value === "session" ? title.value : pageTitles[surface.value]);
 const activePersona = computed(() => personas.value.find((item) => item.id === agent.value));
+const needsWorkspace = computed(() => Boolean((activePersona.value?.requires_folder || agent.value === "code") && !workspace.value));
 const visiblePersonas = computed(() => {
   const rows = personas.value.filter((item) => item.enabled !== false && item.surfaced !== false);
   return rows.length ? rows : [{ id: "cowork", name: "Coworker" }, { id: "chat", name: "Chat" }, { id: "code", name: "Code", requires_folder: true }];
 });
+const personaOptions = computed(() => visiblePersonas.value.map((item) => ({ value: item.id, label: item.name || item.id, description: item.tagline || "切换智能体" })));
+const modeOptions = [
+  { value: "discuss", label: "讨论模式", description: "仅讨论方案，不执行操作" },
+  { value: "interactive", label: "每次确认", description: "执行敏感操作前向你确认" },
+  { value: "auto-approve", label: "自动审批", description: "自动批准低风险操作" },
+  { value: "auto", label: "绕过审批", description: "直接执行所有操作" },
+];
+const modelOptions = computed(() => models.value.map((item) => ({ value: item, label: item.includes(":") ? item.split(":").slice(1).join(":") : item, description: item })));
 const pending = computed(() => [...messages.value].reverse().find((item) => ["approval", "question"].includes(item.kind) && !item.resolved));
 
 function contentText(content) {
@@ -83,6 +98,7 @@ function handleEvent(event) {
   const data = event.data || {};
   if (event.type === "ready") {
     connected.value = true;
+    sessionReady.value = true;
     status.value = "已连接";
     if (data.model) model.value = data.model;
     if (data.mode) mode.value = data.mode;
@@ -104,7 +120,15 @@ function handleEvent(event) {
   } else if (event.type === "permission_required") {
     messages.value.push({ kind: "approval", name: data.name, reason: data.reason, args: data.arguments || {} });
   } else if (event.type === "question_requested") {
-    messages.value.push({ kind: "question", text: data.question || "请选择", options: data.options || [], allowText: data.allow_text !== false });
+    messages.value.push({
+      kind: "question",
+      text: data.question || "请选择",
+      header: data.header || "",
+      options: data.options || [],
+      questions: data.questions || [],
+      allowText: data.allow_text !== false,
+      multi: !!data.multi,
+    });
   } else if (event.type === "turn_done") {
     running.value = false;
     refreshSessions();
@@ -123,13 +147,19 @@ function handleEvent(event) {
 
 function connect() {
   socket?.close();
+  socket = null;
   connected.value = false;
+  sessionReady.value = false;
+  if (needsWorkspace.value) {
+    status.value = "发送任务时请选择工作目录";
+    return;
+  }
   status.value = "正在连接…";
   socket = new Session(sessionId.value, workspace.value, agent.value, {
     onEvent: handleEvent,
     onOpen: () => {
       connected.value = true;
-      status.value = "已连接";
+      status.value = workspace.value ? "正在初始化工作区…" : "已连接";
       if (pendingMessage) {
         const text = pendingMessage;
         pendingMessage = "";
@@ -138,7 +168,13 @@ function connect() {
         socket.userMessage(text, model.value);
       }
     },
-    onClose: () => { connected.value = false; status.value = "连接已断开"; },
+    onClose: () => {
+      connected.value = false;
+      if (!sessionReady.value && workspace.value) {
+        status.value = "工作区初始化失败";
+        addNotice("工作区初始化失败，请检查后端日志。若日志出现 UnicodeDecodeError，需要后端以 UTF-8 解码 Git 输出。");
+      } else status.value = "连接已断开";
+    },
   });
 }
 
@@ -198,11 +234,14 @@ function newSession(persona = agent.value) {
   messages.value = [];
   streaming.value = "";
   running.value = false;
+  pendingMessage = "";
+  sendGate.value = "";
+  folderError.value = "";
   connect();
 }
 
-function changePersona(event) {
-  newSession(event.target.value);
+function changePersona(value) {
+  newSession(value);
 }
 
 async function openRun(prepared) {
@@ -232,18 +271,46 @@ function setTheme(value) {
 
 function send() {
   const text = draft.value.trim();
-  if (!text || running.value || !connected.value) return;
-  if (activePersona.value?.requires_folder && !workspace.value) {
-    const path = window.prompt("该 Coworker 需要工作目录，请输入绝对路径：");
-    if (!path) return;
-    workspace.value = path;
-    pendingMessage = text;
-    connect();
+  if (!text || running.value) return;
+  if (needsWorkspace.value) {
+    sendGate.value = text;
+    folderError.value = "";
+    draft.value = "";
     return;
   }
+  if (!connected.value || !socket) return;
   messages.value.push({ kind: "user", text, ts: Date.now() / 1000 });
   draft.value = "";
   socket.userMessage(text, model.value);
+}
+
+function resolveSendFolder(path) {
+  if (!sendGate.value) return;
+  workspace.value = path;
+  pendingMessage = sendGate.value;
+  sendGate.value = "";
+  folderError.value = "";
+  connect();
+}
+
+async function startTempAndSend() {
+  folderError.value = "";
+  try {
+    const result = await createTempWorkspace(sessionId.value);
+    if (!result.ok || !result.path) {
+      folderError.value = result.error || "无法创建临时工作目录";
+      return;
+    }
+    resolveSendFolder(result.path);
+  } catch (error) {
+    folderError.value = error?.message || "无法创建临时工作目录";
+  }
+}
+
+function cancelSendFolder() {
+  draft.value = sendGate.value;
+  sendGate.value = "";
+  folderError.value = "";
 }
 
 function keydown(event) {
@@ -260,8 +327,8 @@ function respond(value) {
   pending.value.resolved = value;
 }
 
-function changeMode() { socket?.setMode(mode.value); }
-function changeModel() { socket?.setModel(model.value); }
+function changeMode(value) { mode.value = value; socket?.setMode(value); }
+function changeModel(value) { model.value = value; socket?.setModel(value); }
 function toggleTheme() {
   dark.value = !dark.value;
   localStorage.setItem("openworker-theme", dark.value ? "dark" : "light");
@@ -402,28 +469,25 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <section v-if="pending" class="approval-bar">
+      <section v-if="pending" :class="pending.kind === 'question' ? 'question-bar' : 'approval-bar'">
         <template v-if="pending.kind === 'approval'">
           <div><strong>需要确认</strong><span>{{ pending.name }}</span></div>
           <button class="secondary" @click="respond('deny')">拒绝</button><button class="primary" @click="respond('once')">允许一次</button>
         </template>
-        <template v-else>
-          <div><strong>{{ pending.text }}</strong></div>
-          <button v-for="option in pending.options" :key="option.value || option.label || option" class="secondary" @click="respond(option.value || option.label || option)">{{ option.label || option }}</button>
-        </template>
+        <QuestionPrompt v-else :key="`${sessionId}-${messages.indexOf(pending)}`" :item="pending" @answer="respond" />
       </section>
 
       <footer class="composer-area">
         <div class="composer">
-          <textarea v-model="draft" :disabled="!connected" rows="1" :placeholder="connected ? '描述任务，Enter 发送，Shift + Enter 换行' : '等待本地服务连接…'" @keydown="keydown"></textarea>
+          <textarea v-model="draft" :disabled="!connected && !needsWorkspace" rows="1" :placeholder="needsWorkspace ? '描述任务，发送时选择工作目录' : connected ? '描述任务，Enter 发送，Shift + Enter 换行' : '等待本地服务连接…'" @keydown="keydown"></textarea>
           <div class="composer-toolbar">
             <div class="selectors">
-              <select :value="agent" title="Coworker" @change="changePersona"><option v-for="item in visiblePersonas" :key="item.id" :value="item.id">{{ item.name || item.id }}</option></select>
-              <select v-model="mode" title="权限模式" @change="changeMode"><option value="discuss">讨论</option><option value="interactive">每次确认</option><option value="auto-approve">自动审批</option><option value="auto">绕过审批</option></select>
-              <select v-if="models.length" v-model="model" title="模型" @change="changeModel"><option v-for="item in models" :key="item" :value="item">{{ item }}</option></select>
+              <SelectMenu :model-value="agent" :options="personaOptions" icon="◇" label="选择智能体" @change="changePersona" />
+              <SelectMenu :model-value="mode" :options="modeOptions" icon="◉" label="选择权限模式" @change="changeMode" />
+              <SelectMenu v-if="models.length" class="model-selector" :model-value="model" :options="modelOptions" icon="✦" label="选择模型" wide @change="changeModel" />
             </div>
             <button v-if="running" class="stop-button" title="停止" @click="socket.interrupt()">■</button>
-            <button v-else class="send-button" :disabled="!draft.trim() || !connected" title="发送" @click="send">↑</button>
+            <button v-else class="send-button" :disabled="!draft.trim() || (!connected && !needsWorkspace)" title="发送" @click="send">↑</button>
           </div>
         </div>
       </footer>
@@ -434,5 +498,6 @@ onBeforeUnmount(() => {
       <AuditView v-else-if="surface === 'audit'" />
       <SettingsView v-else :dark="dark" @theme-change="setTheme" @settings-change="reloadConfig" />
     </main>
+    <FolderDialog v-if="sendGate" :persona-name="activePersona?.name || agent" :external-error="folderError" @pick="resolveSendFolder" @temp="startTempAndSend" @cancel="cancelSendFolder" />
   </div>
 </template>
