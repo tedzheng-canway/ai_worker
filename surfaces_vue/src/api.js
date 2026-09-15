@@ -111,6 +111,11 @@ export class Session {
   userMessage(text, model) { this.send({ type: "user_message", text, ...(model ? { model } : {}) }); }
   interrupt() { this.send({ type: "interrupt" }); }
   approve(decision) { this.send({ type: "approval", decision }); }
+  respondDirectory(granted, path, writable = false) { this.send({ type: "directory_response", granted, ...(path ? { path } : {}), writable }); }
+  respondTool(approved) { this.send({ type: "tool_response", approved }); }
+  respondPlan(approved) { this.send({ type: "plan_response", approved }); }
+  respondTeam(approved) { this.send({ type: "team_response", approved }); }
+  respondItems(approved) { this.send({ type: "items_response", approved }); }
   answer(answer) { this.send({ type: "question_response", answer }); }
   setMode(mode) { this.send({ type: "set_mode", mode }); }
   setModel(model) { this.send({ type: "set_model", model }); }

@@ -9,6 +9,7 @@ import SettingsView from "./components/SettingsView.vue";
 import QuestionPrompt from "./components/QuestionPrompt.vue";
 import FolderDialog from "./components/FolderDialog.vue";
 import SelectMenu from "./components/SelectMenu.vue";
+import ApprovalPrompt from "./components/ApprovalPrompt.vue";
 
 const newId = () => crypto.randomUUID?.().slice(0, 12) || Math.random().toString(36).slice(2, 14);
 const sessions = ref([]);
@@ -59,7 +60,8 @@ const modeOptions = [
   { value: "auto", label: "绕过审批", description: "直接执行所有操作" },
 ];
 const modelOptions = computed(() => models.value.map((item) => ({ value: item, label: item.includes(":") ? item.split(":").slice(1).join(":") : item, description: item })));
-const pending = computed(() => [...messages.value].reverse().find((item) => ["approval", "question"].includes(item.kind) && !item.resolved));
+const requestKinds = new Set(["approval", "dirreq", "toolreq", "planreq", "teamreq", "itemsreq", "question"]);
+const pending = computed(() => [...messages.value].reverse().find((item) => requestKinds.has(item.kind) && !item.resolved));
 
 function contentText(content) {
   if (typeof content === "string") return content;
@@ -118,7 +120,25 @@ function handleEvent(event) {
   } else if (event.type === "tool_finished") {
     updateTool(data);
   } else if (event.type === "permission_required") {
-    messages.value.push({ kind: "approval", name: data.name, reason: data.reason, args: data.arguments || {} });
+    messages.value.push({
+      kind: "approval",
+      name: data.name,
+      reason: data.reason,
+      args: data.arguments || {},
+      category: data.category,
+      standingTarget: data.standing_target,
+      readonlyOk: !!data.readonly_ok,
+    });
+  } else if (event.type === "directory_requested") {
+    messages.value.push({ kind: "dirreq", reason: data.reason || "", path: data.path || "", writable: !!data.writable, primary: !!data.primary });
+  } else if (event.type === "tool_requested") {
+    messages.value.push({ kind: "toolreq", tool: data.name || "", reason: data.reason || "", installable: data.installable === true, version: data.version || "", summary: data.summary || "" });
+  } else if (event.type === "plan_proposed") {
+    messages.value.push({ kind: "planreq", plan: data.plan || "" });
+  } else if (event.type === "team_proposed") {
+    messages.value.push({ kind: "teamreq", members: data.members || [], note: data.note || "" });
+  } else if (event.type === "items_proposed") {
+    messages.value.push({ kind: "itemsreq", items: data.items || [], note: data.note || "" });
   } else if (event.type === "question_requested") {
     messages.value.push({
       kind: "question",
@@ -321,10 +341,21 @@ function keydown(event) {
 }
 
 function respond(value) {
-  if (!pending.value) return;
-  if (pending.value.kind === "approval") socket.approve(value);
-  else socket.answer(value);
+  if (!pending.value || pending.value.kind !== "question") return;
+  socket?.answer(value);
   pending.value.resolved = value;
+}
+
+function resolveRequest(result) {
+  const item = pending.value;
+  if (!item || item.kind === "question") return;
+  if (item.kind === "approval") socket?.approve(result.decision);
+  else if (item.kind === "dirreq") socket?.respondDirectory(result.approved, item.path, result.writable);
+  else if (item.kind === "toolreq") socket?.respondTool(result.approved);
+  else if (item.kind === "planreq") socket?.respondPlan(result.approved);
+  else if (item.kind === "teamreq") socket?.respondTeam(result.approved);
+  else if (item.kind === "itemsreq") socket?.respondItems(result.approved);
+  item.resolved = result.decision || (result.approved ? "approved" : "denied");
 }
 
 function changeMode(value) { mode.value = value; socket?.setMode(value); }
@@ -469,12 +500,9 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <section v-if="pending" :class="pending.kind === 'question' ? 'question-bar' : 'approval-bar'">
-        <template v-if="pending.kind === 'approval'">
-          <div><strong>需要确认</strong><span>{{ pending.name }}</span></div>
-          <button class="secondary" @click="respond('deny')">拒绝</button><button class="primary" @click="respond('once')">允许一次</button>
-        </template>
-        <QuestionPrompt v-else :key="`${sessionId}-${messages.indexOf(pending)}`" :item="pending" @answer="respond" />
+      <section v-if="pending" :class="pending.kind === 'question' ? 'question-bar' : 'request-bar'">
+        <QuestionPrompt v-if="pending.kind === 'question'" :key="`question-${sessionId}-${messages.indexOf(pending)}`" :item="pending" @answer="respond" />
+        <ApprovalPrompt v-else :key="`request-${sessionId}-${messages.indexOf(pending)}`" :item="pending" @resolve="resolveRequest" />
       </section>
 
       <footer class="composer-area">
