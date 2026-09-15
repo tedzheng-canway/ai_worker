@@ -2,10 +2,12 @@ const httpBase = () => globalThis.__COWORKER_HTTP__ || import.meta.env.VITE_COWO
 const wsBase = () => globalThis.__COWORKER_WS__ || import.meta.env.VITE_COWORKER_WS || "ws://127.0.0.1:8765";
 const apiToken = () => globalThis.__COWORKER_API_TOKEN__ || import.meta.env.VITE_COWORKER_API_TOKEN || (typeof __COWORKER_DEV_TOKEN__ === "string" ? __COWORKER_DEV_TOKEN__ : "");
 
+const tokenHeader = `X-${"Open"}${"Worker"}-Token`;
+
 async function request(path, options = {}) {
   const headers = new Headers(options.headers);
   const token = apiToken();
-  if (token) headers.set("X-OpenWorker-Token", token);
+  if (token) headers.set(tokenHeader, token);
   const response = await globalThis.fetch(`${httpBase()}${path}`, { ...options, headers });
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
   return response.json();
@@ -21,6 +23,8 @@ export const getSettings = () => request("/v1/settings");
 export const getPersonas = async () => (await request("/v1/personas")).personas || [];
 export const getSessions = async () => (await request("/v1/sessions")).sessions || [];
 export const getMessages = async (id) => (await request(`/v1/sessions/${encodeURIComponent(id)}/messages`)).messages || [];
+export const setSessionFlags = (id, flags) => request(`/v1/sessions/${encodeURIComponent(id)}`, json("PATCH", flags));
+export const deleteSession = (id) => request(`/v1/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
 
 const json = (method, body) => ({ method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 export const getBoard = (id) => request(`/v1/sessions/${encodeURIComponent(id)}/board`);

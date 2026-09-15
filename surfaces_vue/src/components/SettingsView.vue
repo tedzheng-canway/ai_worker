@@ -3,7 +3,7 @@ import { onMounted, ref } from "vue";
 import { addModel, createSkill, deleteAllMemory, deleteMemory, deleteSkill, getMemory, getMemorySettings, getPersonas, getProviders, getSettings, listSkills, removeModel, removeProvider, setAutoApprove, setCompactionSettings, setContextBar, setDefaultModel, setMemorySettings, setPdfSettings, setProvider, setScratchBase, setSessionsPeek, updateMemory, updatePersona, updateSkill } from "../api";
 const props = defineProps({ dark: Boolean });
 const emit = defineEmits(["theme-change", "settings-change"]);
-const tabs = [{ id: "general", label: "通用" }, { id: "models", label: "模型" }, { id: "context", label: "上下文" }, { id: "skills", label: "技能" }, { id: "voice", label: "语音" }, { id: "memory", label: "记忆" }, { id: "personas", label: "Coworkers" }];
+const tabs = [{ id: "general", label: "通用" }, { id: "models", label: "模型" }, { id: "context", label: "上下文" }, { id: "skills", label: "技能" }, { id: "memory", label: "记忆" }, { id: "personas", label: "智能体" }];
 const tab = ref("general");
 const settings = ref({});
 const providers = ref([]);
@@ -41,6 +41,11 @@ async function clearMemory() { if (!confirm("确定清空全部记忆？此操�
 async function saveMemoryPrefs() { memorySettings.value = await setMemorySettings(memorySettings.value); flash(); }
 async function togglePersona(persona) { const result = await updatePersona(persona.id, { enabled: !persona.enabled }); if (result.personas) personas.value = result.personas; else persona.enabled = !persona.enabled; emit("settings-change"); }
 async function saveGeneral(key, action, value) { await action(value); settings.value[key] = value; flash(); }
+const fieldLabels = { api_key: "API 密钥", base_url: "API 地址", endpoint: "服务地址", organization: "组织 ID", project: "项目 ID", method: "连接方式", model: "模型名称", region: "区域" };
+const fieldHelps = { api_key: "用于访问该模型服务，密钥只保存在本机。", base_url: "模型服务的接口地址。", endpoint: "模型服务的访问地址。", organization: "可选的组织标识。", project: "可选的项目标识。", method: "填写需要使用的连接或认证方式。", model: "填写此提供商支持的模型名称。", region: "填写服务所在区域。" };
+function fieldLabel(field) { return fieldLabels[field.key] || field.label || "配置项"; }
+function fieldHelp(field) { return fieldHelps[field.key] || `填写 ${fieldLabel(field)}，保存后用于连接模型服务。`; }
+function personaSummary(persona) { return persona.requires_folder ? "需要绑定工作目录的项目型智能体" : "可直接开始对话的通用智能体"; }
 onMounted(load);
 </script>
 
@@ -54,29 +59,25 @@ onMounted(load);
         <div class="card settings-card"><h2>主题</h2><div class="segmented"><button :class="{ active: !dark }" @click="emit('theme-change', false)">浅色</button><button :class="{ active: dark }" @click="emit('theme-change', true)">深色</button></div></div>
         <div class="card settings-card"><h2>侧边栏</h2><label>每组显示会话数<input type="number" min="1" max="50" :value="settings.sessions_peek || 5" @change="saveGeneral('sessions_peek', setSessionsPeek, Number($event.target.value))" /></label><label class="toggle-row"><span><strong>显示上下文使用进度</strong><small>在输入框中展示模型上下文占用</small></span><input type="checkbox" :checked="settings.context_bar" @change="saveGeneral('context_bar', setContextBar, $event.target.checked)" /></label></div>
         <div class="card settings-card"><h2>本地文件</h2><label>临时工作区根目录<input v-model="settings.scratch_base" placeholder="使用系统默认目录" /></label><button class="btn" @click="saveGeneral('scratch_base', setScratchBase, settings.scratch_base)">保存目录</button></div>
-        <div class="card settings-card"><h2>自动审批</h2><label class="toggle-row"><span><strong>启用 Auto-Approve 模式</strong><small>允许审查器自动批准低风险操作</small></span><input type="checkbox" :checked="settings.auto_approve" @change="saveGeneral('auto_approve', setAutoApprove, $event.target.checked)" /></label></div>
+        <div class="card settings-card"><h2>自动审批</h2><label class="toggle-row"><span><strong>启用自动审批模式</strong><small>允许审查器自动批准低风险操作</small></span><input type="checkbox" :checked="settings.auto_approve" @change="saveGeneral('auto_approve', setAutoApprove, $event.target.checked)" /></label></div>
       </template>
 
       <template v-else-if="tab === 'models'">
         <div class="page-head"><div><h1>模型与提供商</h1><p>配置凭据，并管理会话可选择的模型。</p></div></div>
-        <div v-for="provider in providers" :key="provider.name" class="card settings-card"><div class="setting-title"><div><h2>{{ provider.title }}</h2><small>{{ provider.blurb }} · {{ provider.configured ? '已配置' : '未配置' }}</small></div><button v-if="provider.configured" class="btn danger" @click="forgetProvider(provider)">移除配置</button></div><label v-for="field in provider.fields || []" :key="field.key">{{ field.label }}<select v-if="field.choices" v-model="providerFields[provider.name][field.key]"><option v-for="choice in field.choices" :key="choice.value" :value="choice.value">{{ choice.label }}</option></select><input v-else v-model="providerFields[provider.name][field.key]" :type="field.secret ? 'password' : 'text'" :placeholder="field.placeholder" /><small>{{ field.help }}</small></label><button class="btn primary" @click="saveProvider(provider)">保存提供商</button></div>
-        <div class="card settings-card"><h2>可用模型</h2><label v-for="item in settings.models || []" :key="item" class="model-row"><input type="radio" name="default-model" :checked="item === (settings.model || settings.default_model)" @change="defaultModel(item)" /><span>{{ item }}</span><button class="text-danger" @click="removeModelRow(item)">移除</button></label><form class="inline-form" @submit.prevent="addModelRow"><input v-model="modelDraft" placeholder="provider:model-id" /><button class="btn primary">添加模型</button></form></div>
+        <div v-for="provider in providers" :key="provider.name" class="card settings-card"><div class="setting-title"><div><h2>{{ provider.title }}</h2><small>模型服务配置 · {{ provider.configured ? '已配置' : '未配置' }}</small></div><button v-if="provider.configured" class="btn danger" @click="forgetProvider(provider)">移除配置</button></div><label v-for="field in provider.fields || []" :key="field.key">{{ fieldLabel(field) }}<input v-model="providerFields[provider.name][field.key]" :type="field.secret ? 'password' : 'text'" :list="field.choices?.length ? `${provider.name}-${field.key}-choices` : undefined" :placeholder="field.choices?.length ? field.choices.map((choice) => choice.value).join(' / ') : `请输入${fieldLabel(field)}`" /><datalist v-if="field.choices?.length" :id="`${provider.name}-${field.key}-choices`"><option v-for="choice in field.choices" :key="choice.value" :value="choice.value"></option></datalist><small>{{ fieldHelp(field) }}</small></label><button class="btn primary" @click="saveProvider(provider)">保存提供商</button></div>
+        <div class="card settings-card"><h2>可用模型</h2><label v-for="item in settings.models || []" :key="item" class="model-row"><input type="radio" name="default-model" :checked="item === (settings.model || settings.default_model)" @change="defaultModel(item)" /><span>{{ item }}</span><button class="text-danger" @click="removeModelRow(item)">移除</button></label><form class="inline-form" @submit.prevent="addModelRow"><input v-model="modelDraft" placeholder="提供商:模型ID" /><button class="btn primary">添加模型</button></form></div>
       </template>
 
       <template v-else-if="tab === 'context'">
         <div class="page-head"><div><h1>上下文与文件</h1><p>控制 PDF 处理与自动压缩策略。</p></div></div>
-        <div class="card settings-card"><h2>PDF Token 节省</h2><label>回退模式<select :value="settings.pdf_fallback || 'text'" @change="setPdfSettings({ pdf_fallback: $event.target.value }); settings.pdf_fallback = $event.target.value"><option value="text">提取文本</option><option value="attach">原文件</option></select></label><label>最大页数<input v-model.number="settings.pdf_max_pages" type="number" min="1" @change="setPdfSettings({ pdf_max_pages: settings.pdf_max_pages })" /></label><label>最大文件大小（MB）<input v-model.number="settings.pdf_max_mb" type="number" min="1" @change="setPdfSettings({ pdf_max_mb: settings.pdf_max_mb })" /></label></div>
-        <div class="card settings-card"><h2>自动上下文压缩</h2><label>触发阈值（%）<input v-model.number="settings.compaction_threshold_pct" type="number" min="10" max="100" /></label><label>压缩后 Token 上限<input v-model.number="settings.compaction_cap_tokens" type="number" min="1000" /></label><label>压缩模型<input v-model="settings.compaction_model" placeholder="留空使用当前模型" /></label><button class="btn primary" @click="setCompactionSettings({ compaction_threshold_pct: settings.compaction_threshold_pct, compaction_cap_tokens: settings.compaction_cap_tokens, compaction_model: settings.compaction_model }); flash()">保存压缩设置</button></div>
+        <div class="card settings-card"><h2>PDF 文本用量优化</h2><label>回退模式<select :value="settings.pdf_fallback || 'text'" @change="setPdfSettings({ pdf_fallback: $event.target.value }); settings.pdf_fallback = $event.target.value"><option value="text">提取文本</option><option value="attach">原文件</option></select></label><label>最大页数<input v-model.number="settings.pdf_max_pages" type="number" min="1" @change="setPdfSettings({ pdf_max_pages: settings.pdf_max_pages })" /></label><label>最大文件大小（MB）<input v-model.number="settings.pdf_max_mb" type="number" min="1" @change="setPdfSettings({ pdf_max_mb: settings.pdf_max_mb })" /></label></div>
+        <div class="card settings-card"><h2>自动上下文压缩</h2><label>触发阈值（%）<input v-model.number="settings.compaction_threshold_pct" type="number" min="10" max="100" /></label><label>压缩后令牌数量上限<input v-model.number="settings.compaction_cap_tokens" type="number" min="1000" /></label><label>压缩模型<input v-model="settings.compaction_model" placeholder="留空使用当前模型" /></label><button class="btn primary" @click="setCompactionSettings({ compaction_threshold_pct: settings.compaction_threshold_pct, compaction_cap_tokens: settings.compaction_cap_tokens, compaction_model: settings.compaction_model }); flash()">保存压缩设置</button></div>
       </template>
 
       <template v-else-if="tab === 'skills'">
         <div class="page-head"><div><h1>技能</h1><p>管理可由输入框斜杠菜单调用的技能。</p></div></div>
         <form class="card form-card" @submit.prevent="createSkillRow"><label>技能名称<input v-model="skillForm.name" required placeholder="review-code" /></label><label>说明<input v-model="skillForm.description" /></label><label>指令<textarea v-model="skillForm.instructions" required rows="5"></textarea></label><button class="btn primary">创建技能</button></form>
-        <div class="card-list"><article v-for="skill in skills" :key="skill.name" class="card list-card"><div><strong>/{{ skill.name }}</strong><small>{{ skill.description }} · {{ skill.scope }}</small></div><div class="actions"><label class="switch"><input type="checkbox" :checked="skill.enabled" @change="toggleSkill(skill)" /><span></span></label><button class="btn danger" @click="removeSkillRow(skill)">删除</button></div></article></div>
-      </template>
-
-      <template v-else-if="tab === 'voice'">
-        <div class="page-head"><div><h1>语音输入</h1><p>使用本地 Whisper 模型进行私密转录。</p></div></div><div class="empty-card"><strong>需要桌面运行时</strong><p>浏览器版不会请求麦克风权限。语音模型下载、设备检查和转录测试仅在 Tauri 桌面壳中可用。</p></div>
+        <div class="card-list"><article v-for="skill in skills" :key="skill.name" class="card list-card"><div><strong>/{{ skill.name }}</strong><small>{{ skill.description || '无说明' }} · {{ skill.scope === 'global' ? '全局' : '项目' }}</small></div><div class="actions"><label class="switch"><input type="checkbox" :checked="skill.enabled" @change="toggleSkill(skill)" /><span></span></label><button class="btn danger" @click="removeSkillRow(skill)">删除</button></div></article></div>
       </template>
 
       <template v-else-if="tab === 'memory'">
@@ -86,7 +87,7 @@ onMounted(load);
       </template>
 
       <template v-else>
-        <div class="page-head"><div><h1>Coworkers</h1><p>启用或停用不同角色的 Coworker。</p></div></div><div class="card-list"><article v-for="persona in personas" :key="persona.id" class="card list-card"><div><strong>{{ persona.name || persona.id }}</strong><small>{{ persona.description || persona.family || 'Coworker' }}</small></div><label class="switch"><input type="checkbox" :checked="persona.enabled" @change="togglePersona(persona)" /><span></span></label></article></div>
+        <div class="page-head"><div><h1>智能体</h1><p>启用或停用不同角色的智能体。</p></div></div><div class="card-list"><article v-for="persona in personas" :key="persona.id" class="card list-card"><div><strong>{{ persona.name || persona.id }}</strong><small>{{ personaSummary(persona) }}</small></div><label class="switch"><input type="checkbox" :checked="persona.enabled" @change="togglePersona(persona)" /><span></span></label></article></div>
       </template>
     </section>
   </div>

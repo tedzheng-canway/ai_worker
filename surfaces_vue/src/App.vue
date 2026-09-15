@@ -1,6 +1,6 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { getHealth, getMessages, getPersonas, getSessions, getSettings, Session } from "./api";
+import { deleteSession, getHealth, getMessages, getPersonas, getSessions, getSettings, setSessionFlags, Session } from "./api";
 import AuditView from "./components/AuditView.vue";
 import AutomationsView from "./components/AutomationsView.vue";
 import BoardView from "./components/BoardView.vue";
@@ -24,6 +24,9 @@ const streaming = ref("");
 const status = ref("正在连接本地服务…");
 const sidebarOpen = ref(true);
 const surface = ref("session");
+const rowMenu = ref("");
+const deleteArmed = ref("");
+const showArchived = ref(false);
 const dark = ref(localStorage.getItem("openworker-theme") === "dark");
 const scroller = ref(null);
 let socket = null;
@@ -31,6 +34,8 @@ let refreshTimer = null;
 let pendingMessage = "";
 
 const activeSession = computed(() => sessions.value.find((item) => item.session_id === sessionId.value));
+const recentSessions = computed(() => sessions.value.filter((item) => !item.archived && !item.session_id.startsWith("__")));
+const archivedSessions = computed(() => sessions.value.filter((item) => item.archived && !item.session_id.startsWith("__")));
 const title = computed(() => activeSession.value?.title || "新对话");
 const pageTitles = { automations: "自动化", connectors: "连接器", audit: "活动审计", board: "任务看板", settings: "设置" };
 const pageTitle = computed(() => surface.value === "session" ? title.value : pageTitles[surface.value]);
@@ -139,6 +144,36 @@ function connect() {
 
 async function refreshSessions() {
   try { sessions.value = await getSessions(); } catch {}
+}
+
+function closeRowMenu() {
+  rowMenu.value = "";
+  deleteArmed.value = "";
+}
+
+function toggleRowMenu(id) {
+  rowMenu.value = rowMenu.value === id ? "" : id;
+  deleteArmed.value = "";
+}
+
+async function archiveConversation(item) {
+  await setSessionFlags(item.session_id, { archived: !item.archived });
+  rowMenu.value = "";
+  await refreshSessions();
+  if (!item.archived && item.session_id === sessionId.value) newSession(item.agent || agent.value);
+}
+
+async function removeConversation(item) {
+  if (deleteArmed.value !== item.session_id) {
+    deleteArmed.value = item.session_id;
+    return;
+  }
+  const result = await deleteSession(item.session_id);
+  if (result.ok === false) return;
+  rowMenu.value = "";
+  deleteArmed.value = "";
+  await refreshSessions();
+  if (item.session_id === sessionId.value) newSession(item.agent || agent.value);
 }
 
 async function selectSession(item) {
@@ -251,6 +286,7 @@ watch([messages, streaming], () => nextTick(() => {
 watch(dark, (value) => document.documentElement.dataset.theme = value ? "dark" : "light", { immediate: true });
 
 onMounted(async () => {
+  window.addEventListener("click", closeRowMenu);
   try {
     const [health, settings, personaRows, sessionRows] = await Promise.all([getHealth(), getSettings(), getPersonas(), getSessions()]);
     model.value = health.model || settings.default_model || model.value;
@@ -266,6 +302,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  window.removeEventListener("click", closeRowMenu);
   socket?.close();
   if (refreshTimer) window.clearInterval(refreshTimer);
 });
@@ -276,18 +313,40 @@ onBeforeUnmount(() => {
     <aside class="sidebar">
       <header class="brand">
         <div class="logo">O</div>
-        <strong>OpenWorker</strong>
+        <strong>AIWorker</strong>
         <button class="icon-button pin" title="收起侧边栏" @click="sidebarOpen = false">‹</button>
       </header>
       <button class="new-button" @click="newSession()"><span>＋</span> 新对话</button>
       <div class="section-label">最近对话</div>
       <nav class="session-list">
-        <button v-for="item in sessions" :key="item.session_id" class="session-row" :class="{ active: surface === 'session' && item.session_id === sessionId }" @click="selectSession(item)">
-          <span class="session-icon">◇</span>
-          <span class="session-copy"><strong>{{ item.title || '未命名对话' }}</strong><small>{{ item.agent }} · {{ compactAge(item.updated_at) }}</small></span>
-          <span v-if="item.liveness === 'working'" class="live-dot"></span>
-        </button>
-        <div v-if="!sessions.length" class="empty-side">还没有历史对话</div>
+        <div v-for="item in recentSessions" :key="item.session_id" class="session-row-wrap">
+          <button class="session-row" :class="{ active: surface === 'session' && item.session_id === sessionId }" @click="selectSession(item)">
+            <span class="session-icon">◇</span>
+            <span class="session-copy"><strong>{{ item.title || '未命名对话' }}</strong><small>{{ item.agent }} · {{ compactAge(item.updated_at) }}</small></span>
+            <span v-if="item.liveness === 'working'" class="live-dot"></span>
+          </button>
+          <button class="row-menu-button" title="对话操作" @click.stop="toggleRowMenu(item.session_id)">⋯</button>
+          <div v-if="rowMenu === item.session_id" class="row-menu" role="menu" @click.stop>
+            <button @click="archiveConversation(item)">▣ 归档</button>
+            <div class="menu-separator"></div>
+            <button class="danger-item" @click="removeConversation(item)">{{ deleteArmed === item.session_id ? '再次点击确认删除' : '⌫ 删除' }}</button>
+          </div>
+        </div>
+        <div v-if="!recentSessions.length && !archivedSessions.length" class="empty-side">还没有历史对话</div>
+        <div v-if="archivedSessions.length" class="archived-section">
+          <button class="archived-toggle" @click="showArchived = !showArchived"><span>{{ showArchived ? '⌄' : '›' }}</span>已归档（{{ archivedSessions.length }}）</button>
+          <div v-if="showArchived">
+            <div v-for="item in archivedSessions" :key="item.session_id" class="session-row-wrap">
+              <button class="session-row archived-row" @click="selectSession(item)"><span class="session-icon">◇</span><span class="session-copy"><strong>{{ item.title || '未命名对话' }}</strong><small>{{ item.agent }} · {{ compactAge(item.updated_at) }}</small></span></button>
+              <button class="row-menu-button" title="对话操作" @click.stop="toggleRowMenu(item.session_id)">⋯</button>
+              <div v-if="rowMenu === item.session_id" class="row-menu" role="menu" @click.stop>
+                <button @click="archiveConversation(item)">↶ 取消归档</button>
+                <div class="menu-separator"></div>
+                <button class="danger-item" @click="removeConversation(item)">{{ deleteArmed === item.session_id ? '再次点击确认删除' : '⌫ 删除' }}</button>
+              </div>
+            </div>
+          </div>
+        </div>
       </nav>
       <nav class="surface-nav">
         <button :class="{ active: surface === 'automations' }" @click="surface = 'automations'"><span>◷</span>自动化</button>
@@ -305,7 +364,7 @@ onBeforeUnmount(() => {
     <main class="main">
       <header class="topbar">
         <button v-if="!sidebarOpen" class="icon-button" title="展开侧边栏" @click="sidebarOpen = true">☰</button>
-        <div class="title-block"><strong>{{ pageTitle }}</strong><small v-if="surface === 'session'">{{ activePersona?.name || agent }} · {{ model }}<template v-if="workspace"> · {{ workspace }}</template></small><small v-else>OpenWorker</small></div>
+        <div class="title-block"><strong>{{ pageTitle }}</strong><small v-if="surface === 'session'">{{ activePersona?.name || agent }} · {{ model }}<template v-if="workspace"> · {{ workspace }}</template></small><small v-else>AIWorker</small></div>
         <button v-if="surface === 'session'" class="icon-button" title="新对话" @click="newSession()">＋</button>
       </header>
 
@@ -314,7 +373,7 @@ onBeforeUnmount(() => {
         <section v-if="!messages.length && !streaming" class="hero">
           <div class="hero-mark">◇</div>
           <h1>今天想完成什么？</h1>
-          <p>选择 Coworker，然后描述任务。OpenWorker 会在本地工作区中协助你。</p>
+          <p>选择 Coworker，然后描述任务。AIWorker 会在本地工作区中协助你。</p>
           <div class="suggestions">
             <button @click="draft = '帮我梳理这个项目的结构和核心模块'">梳理项目结构 <span>→</span></button>
             <button @click="draft = '检查当前项目并修复构建问题'">修复构建问题 <span>→</span></button>
