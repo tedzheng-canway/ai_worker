@@ -29,7 +29,7 @@ AIWorker 将一次任务组织为连续的「模型判断 → 工具执行 → �
 - **任务与协作**：自动化任务、任务看板、团队协作，以及消息和第三方服务连接器。
 - **记忆与偏好**：记忆管理和撤销、中英文界面、浅色/深色及跟随系统外观。
 
-模型服务与外部连接器需要相应的凭据或账号授权。当前启动指引针对本地 Web 版本；桌面端打包暂不纳入当前交付范围。
+模型服务与外部连接器需要相应的凭据或账号授权。项目支持本地 Web 运行和 Windows Electron 桌面端打包。
 
 ## 🛠️ 技术栈
 
@@ -193,6 +193,39 @@ npm run dev
 如修改后端端口，需要同时修改 HTTP、WebSocket 地址，并提供对应端口的令牌。Vite 的自动读取路径固定为 `sidecar-8765.token`。
 
 ## 🧪 构建与验证
+
+### 单独使用 PyInstaller 打包后端
+
+在 **项目根目录** 打开 PowerShell 执行。以下示例使用本机项目路径；其他机器请替换为实际路径。
+要求 `.venv-desktop` 已创建并安装 `coworker/requirements.txt` 和 `packaging/requirements-build.txt` 中的依赖；首次可通过根目录的 `build-desktop.cmd` 完成环境准备及完整打包。
+
+```powershell
+cd D:\self_Code_Storage\gongniu\gongniu_worker\openworker
+
+# 先生成图标：优先 logo.png，不存在时使用 AIworker_logo.png
+.\.venv-desktop\Scripts\python311.exe packaging/make_icon.py
+
+# 按 spec 配置打包后端
+.\.venv-desktop\Scripts\python311.exe -m PyInstaller --noconfirm --clean --distpath dist --workpath build/pyinstaller packaging/coworker.spec
+
+# 可选：检查生成的后端 EXE 能否启动并响应鉴权接口
+.\.venv-desktop\Scripts\python311.exe packaging/smoke_backend.py dist/coworker-server/coworker-server.exe
+```
+
+若虚拟环境中的解释器名为 `python.exe`，将命令中的 `python311.exe` 替换为 `python.exe`。
+
+| 参数 | 作用 |
+| --- | --- |
+| `--noconfirm` | 允许覆盖已有构建产物，不再询问 |
+| `--clean` | 构建前清理 PyInstaller 缓存和临时文件 |
+| `--distpath dist` | 指定最终产物输出目录 |
+| `--workpath build/pyinstaller` | 指定构建中间文件目录 |
+| `packaging/coworker.spec` | 指定后端入口、依赖、资源和图标等打包配置 |
+
+后端最终产物为 `dist/coworker-server/`，运行和分发时必须保留整个目录（包括 `_internal/`），不能只复制 EXE。
+上述操作只更新独立后端产物；更新桌面安装包请运行根目录的 `build-desktop.cmd`，完整流程见 [桌面构建文档](DESKTOP_BUILD.md)。
+
+### Vue 前端构建与验证
 
 在 `surfaces_vue/` 中运行：
 
