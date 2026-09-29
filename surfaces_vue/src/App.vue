@@ -735,7 +735,7 @@ onBeforeUnmount(() => {
         <button :class="{ active: surface === 'settings' }" @click="surface = 'settings'"><span>⚙</span>{{ t("设置") }}</button>
       </nav>
       <footer class="sidebar-footer">
-        <button @click="toggleTheme">{{ dark ? '☀' : '◐' }} {{ dark ? t("浅色模式") : t("深色模式") }}</button>
+        <button @click="toggleTheme">✧ {{ dark ? t("切换深黑外观") : t("切换石墨外观") }}</button>
         <span :class="['connection-dot', { online: connected }]"></span><small>{{ t(status) }}</small>
       </footer>
     </aside>

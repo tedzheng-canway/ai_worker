@@ -820,5 +820,9 @@
   "复制失败，请手动复制": "Copy failed. Copy the command manually.",
   "最近使用：": "Last used: ",
   "尚无可选模型，请先连接提供商。": "No models available. Connect a provider first.",
-  "连接你的 AI 提供商，配置凭据和模型。": "Connect your AI providers and configure credentials and models."
+  "连接你的 AI 提供商，配置凭据和模型。": "Connect your AI providers and configure credentials and models.",
+  "切换深黑外观": "Switch to midnight",
+  "切换石墨外观": "Switch to graphite",
+  "深黑": "Midnight",
+  "石墨": "Graphite"
 }

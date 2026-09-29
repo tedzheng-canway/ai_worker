@@ -217,7 +217,7 @@ const request=(state,path,method='POST')=>state.requests.filter(r=>r.path===path
     await card.getByRole('button',{name:'安装',exact:true}).click();await expect(card).toHaveCount(0);assert.deepEqual(JSON.parse(request(state,'/v1/inbox/tool1/resolve').body.resolution),{approved:true});
     await navigate(page,'收件箱');await page.getByRole('button',{name:'路由配置'}).click();await expect(page.getByLabel('审批投递频道')).toBeVisible();
     await page.screenshot({path:path.join(__dirname,'../dist/p2-routing.png'),fullPage:true});
-    await page.getByRole('button',{name:/深色模式/}).click();await page.getByTitle('收起侧边栏').click();await page.setViewportSize({width:430,height:820});
+    await page.getByRole('button',{name:/切换石墨外观/}).click();await page.getByTitle('收起侧边栏').click();await page.setViewportSize({width:430,height:820});
     await expect(page.locator('.sidebar')).not.toBeVisible();
     await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
     await page.screenshot({path:path.join(__dirname,'../dist/p2-narrow.png'),fullPage:true});
