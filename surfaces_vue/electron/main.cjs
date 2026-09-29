@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, shell, Tray, Menu, nativeImage } = require('electron');
 const { spawn } = require('node:child_process');
 const { randomBytes } = require('node:crypto');
 const fs = require('node:fs');
@@ -6,8 +6,9 @@ const path = require('node:path');
 const net = require('node:net');
 const { serve } = require('./static-server.cjs');
 const { resolveLogo } = require('./logo.cjs');
+const { createTray, showWindow } = require('./tray.cjs');
 
-let backend, frontend, window, connection, stopping = false;
+let backend, frontend, window, tray, connection, stopping = false;
 async function freePort() {
   const socket = net.createServer();
   await new Promise((resolve, reject) => { socket.once('error', reject); socket.listen(0, '127.0.0.1', resolve); });
@@ -17,6 +18,7 @@ async function freePort() {
 }
 function stop() {
   stopping = true;
+  if (tray && !tray.isDestroyed()) tray.destroy();
   frontend?.close();
   backend?.kill();
 }
@@ -66,6 +68,8 @@ async function start() {
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, nodeIntegration: false },
   });
   window.removeMenu();
+  tray = createTray({ app, window, icon: resolveLogo(path.join(__dirname, '../assets')),
+    Tray, Menu, nativeImage, isQuitting: () => stopping });
   ipcMain.on('coworker:connection', (event) => {
     if (event.sender === window.webContents && event.senderFrame === window.webContents.mainFrame && event.senderFrame.url.startsWith(local.url + '/')) event.returnValue = connection;
     else event.returnValue = {};
@@ -80,7 +84,8 @@ async function start() {
 }
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
-  app.on('second-instance', () => { if (window) { if (window.isMinimized()) window.restore(); window.focus(); } });
+  app.on('second-instance', () => showWindow(window));
+  app.on('activate', () => showWindow(window));
   app.on('before-quit', stop);
   app.on('window-all-closed', () => app.quit());
   app.whenReady().then(start).catch(error => { stop(); dialog.showErrorBox('AIWorker 启动失败', error.message); app.quit(); });
