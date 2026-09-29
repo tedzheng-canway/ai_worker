@@ -456,7 +456,8 @@ def _run_git(
 
     try:
         proc = subprocess.run(
-            ["git", *args], cwd=cwd, capture_output=True, text=True, timeout=timeout
+            ["git", "-c", "i18n.logOutputEncoding=utf-8", *args], cwd=cwd,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout
         )
     except FileNotFoundError:
         return "", "git is not installed"

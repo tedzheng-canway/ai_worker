@@ -18,9 +18,11 @@ from typing import Optional
 def _git(workspace: Path, *args: str) -> Optional[str]:
     try:
         out = subprocess.run(
-            ["git", "-C", str(workspace), *args],
+            ["git", "-c", "i18n.logOutputEncoding=utf-8", "-C", str(workspace), *args],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
         )
     except (OSError, subprocess.SubprocessError):

@@ -225,7 +225,6 @@ def create_app(manager: SessionManager) -> FastAPI:
             or request.url.path.startswith("/v1/board/")
             or _request_authenticated(request)
         ):
-            print(api_token)
             return await call_next(request)
         return JSONResponse(
             {"error": "missing or invalid OpenWorker sidecar token"},

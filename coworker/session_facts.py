@@ -59,6 +59,8 @@ def _git_remotes(cwd: Path) -> tuple[tuple[str, str], ...]:
             cwd=str(cwd),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
             check=False,
         )

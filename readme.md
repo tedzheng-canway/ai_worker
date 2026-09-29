@@ -4,7 +4,9 @@ AIWorker 是一个面向日常办公、文件处理和开发协作的 AI 工作�
 
 **👨‍💻 开发者与主要维护者：tedzheng。**
 
-项目借鉴了吴恩达团队的核心任务循环方法论，并结合现有运行时与工具体系，构建 AIWorker 的交互体验。当前主要使用 **Python 后端 + Vue Web 前端**，通过 HTTP 和 WebSocket 通信。
+项目借鉴了吴恩达团队的核心任务循环方法论，并结合现有运行时与工具体系，构建 AIWorker 的交互体验。当前使用 **Python 后端 + Vue 前端**，支持 Web 和 Electron Windows 桌面端，通过 HTTP 和 WebSocket 通信。
+
+Windows 桌面版：在根目录运行 `build-desktop.cmd`，一键打包 PyInstaller 后端及 Electron 前端，安装包输出到 `dist/desktop/`。详细说明见 [桌面构建文档](DESKTOP_BUILD.md)。
 
 ## 🔄 核心任务循环
 

@@ -1,4 +1,5 @@
 <script setup>
+import appLogo from '@app-logo';
 import { t } from './i18n';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { createTempWorkspace, deleteSession, finalizeAutomationRun, getHealth, getMessages, getPersonas, getSessions, getSettings, setSessionFlags, Session } from "./api";
@@ -681,7 +682,7 @@ onBeforeUnmount(() => {
     <OnboardingView v-if="onboarding" @close="onboarding=false" @done="finishSetup" @change="reloadConfig" />
     <aside class="sidebar">
       <header class="brand">
-        <div class="logo">O</div>
+        <img class="logo" :src="appLogo" alt="AIWorker" style="object-fit: contain; background: transparent" />
         <strong>AIWorker</strong>
         <button class="icon-button pin" :title="t(&quot;收起侧边栏&quot;)" @click="sidebarOpen = false">‹</button>
       </header>

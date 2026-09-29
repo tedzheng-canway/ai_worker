@@ -6249,6 +6249,8 @@ def _git_branch(path: Path) -> Optional[str]:
             cwd=path,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=3,
         )
         branch = result.stdout.strip()

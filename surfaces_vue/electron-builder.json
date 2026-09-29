@@ -1,0 +1,11 @@
+{
+  "appId": "com.openworker.aiworker",
+  "productName": "AIWorker",
+  "asar": true,
+  "directories": { "output": "../dist/desktop" },
+  "files": ["dist/**/*", "electron/**/*", "assets/logo.png", "assets/AIworker_logo.png", "package.json"],
+  "extraResources": [{ "from": "../dist/coworker-server", "to": "coworker-server" }],
+  "win": { "target": [{ "target": "nsis", "arch": ["x64"] }], "icon": "../build/desktop/icon.ico" },
+  "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true, "createDesktopShortcut": true, "runAfterFinish": false },
+  "artifactName": "AIWorker-${version}-${arch}-Setup.${ext}"
+}
