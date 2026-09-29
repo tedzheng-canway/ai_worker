@@ -1,4 +1,5 @@
 <script setup>
+import { t } from '../i18n';
 import { computed, defineAsyncComponent, ref, watch } from 'vue';
 import { getArtifacts, readArtifact, revealArtifact } from '../api';
 import { requireSuccess } from '../settings';
@@ -39,15 +40,15 @@ watch(() => props.sessionId, () => { back(); artifacts.value = []; refresh(); if
 watch(() => props.initialPath, (value) => { if (value) open(value); });
 watch(() => props.refreshKey, () => { refresh(); if (path.value) open(path.value); });
 </script>
-<template><aside class="detail-panel artifact-panel"><header><strong>文件与产物</strong><button class="btn" @click="refresh(); path && open(path)">刷新</button><button class="icon-button" title="关闭文件面板" aria-label="关闭文件面板" @click="emit('close')">×</button></header><p v-if="error" class="error-text" role="alert">{{ error }}</p>
-  <template v-if="!path"><button v-if="workspace" class="btn" @click="open(workspace)">浏览工作目录</button><p v-if="!artifacts.length" class="muted">暂无产物</p><button v-for="file in artifacts" :key="file.path" class="file-row" @click="open(file.path)"><strong>{{ file.name || file.path }}</strong><small>{{ file.kind }} · {{ file.size }} bytes</small></button></template>
-  <template v-else><div class="actions"><button class="btn" @click="back">返回列表</button><button class="btn" @click="reveal('open')">系统打开</button><button class="btn" @click="reveal('reveal')">定位文件</button></div><p class="file-path">{{ path }}</p><p v-if="loading">正在加载…</p><template v-if="content"><p v-if="content.truncated" class="status-note">内容已截断；完整内容请用系统打开。</p>
-    <div v-if="content.kind === 'folder'"><button v-for="entry in content.entries" :key="entry.name" class="file-row" @click="child(entry.name)">{{ entry.dir ? '▣' : '▤' }} {{ entry.name }}</button><p v-if="!content.entries?.length">空目录</p></div>
+<template><aside class="detail-panel artifact-panel"><header><strong>{{ t("文件与产物") }}</strong><button class="btn" @click="refresh(); path && open(path)">{{ t("刷新") }}</button><button class="icon-button" :title="t(&quot;关闭文件面板&quot;)" :aria-label="t(&quot;关闭文件面板&quot;)" @click="emit('close')">×</button></header><p v-if="error" class="error-text" role="alert">{{ t(error) }}</p>
+  <template v-if="!path"><button v-if="workspace" class="btn" @click="open(workspace)">{{ t("浏览工作目录") }}</button><p v-if="!artifacts.length" class="muted">{{ t("暂无产物") }}</p><button v-for="file in artifacts" :key="file.path" class="file-row" @click="open(file.path)"><strong>{{ file.name || file.path }}</strong><small>{{ file.kind }} · {{ file.size }} bytes</small></button></template>
+  <template v-else><div class="actions"><button class="btn" @click="back">{{ t("返回列表") }}</button><button class="btn" @click="reveal('open')">{{ t("系统打开") }}</button><button class="btn" @click="reveal('reveal')">{{ t("定位文件") }}</button></div><p class="file-path">{{ path }}</p><p v-if="loading">{{ t("正在加载…") }}</p><template v-if="content"><p v-if="content.truncated" class="status-note">{{ t("内容已截断；完整内容请用系统打开。") }}</p>
+    <div v-if="content.kind === 'folder'"><button v-for="entry in content.entries" :key="entry.name" class="file-row" @click="child(entry.name)">{{ entry.dir ? '▣' : '▤' }} {{ entry.name }}</button><p v-if="!content.entries?.length">{{ t("空目录") }}</p></div>
     <MarkdownView v-else-if="content.kind === 'markdown'" :text="content.content" />
     <img v-else-if="content.kind === 'image'" class="artifact-image" :src="content.data_url" :alt="path" />
-    <iframe v-else-if="content.kind === 'html'" title="HTML 隔离预览" sandbox="allow-scripts" :srcdoc="sandboxHtml(content.content)"></iframe>
+    <iframe v-else-if="content.kind === 'html'" :title="t(&quot;HTML 隔离预览&quot;)" sandbox="allow-scripts" :srcdoc="sandboxHtml(content.content)"></iframe>
     <PdfPreview v-else-if="content.kind === 'pdf'" :data-url="content.data_url" />
-    <template v-else-if="content.kind === 'csv' || content.kind === 'sheet'"><select v-if="content.kind === 'sheet'" v-model="sheet" aria-label="工作表"><option v-for="name in Object.keys(sheets)" :key="name">{{ name }}</option></select><p v-if="table.length > 500">预览前 500 行，共 {{ table.length }} 行。</p><div class="table-scroll"><table><tbody><tr v-for="(row, i) in table.slice(0,500)" :key="i"><td v-for="(cell, j) in row" :key="j">{{ cell }}</td></tr></tbody></table></div></template>
-    <pre v-else-if="content.content != null" class="file-text">{{ content.content }}</pre><p v-else>此格式请通过“系统打开”查看。</p>
+    <template v-else-if="content.kind === 'csv' || content.kind === 'sheet'"><select v-if="content.kind === 'sheet'" v-model="sheet" :aria-label="t(&quot;工作表&quot;)"><option v-for="name in Object.keys(sheets)" :key="name">{{ name }}</option></select><p v-if="table.length > 500">{{ t("预览前 500 行，共 ") }}{{ table.length }}{{ t(" 行。") }}</p><div class="table-scroll"><table><tbody><tr v-for="(row, i) in table.slice(0,500)" :key="i"><td v-for="(cell, j) in row" :key="j">{{ cell }}</td></tr></tbody></table></div></template>
+    <pre v-else-if="content.content != null" class="file-text">{{ content.content }}</pre><p v-else>{{ t("此格式请通过“系统打开”查看。") }}</p>
   </template></template>
 </aside></template>

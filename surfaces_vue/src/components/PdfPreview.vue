@@ -1,4 +1,5 @@
 <script setup>
+import { t } from '../i18n';
 import { ref, watch, onBeforeUnmount, nextTick } from 'vue';
 import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
@@ -34,4 +35,4 @@ watch(() => props.dataUrl, async (url) => {
 watch([page, scale], render);
 onBeforeUnmount(() => { generation++; renderTask?.cancel(); documentTask?.destroy(); });
 </script>
-<template><div class="pdf-preview"><div class="actions"><button class="btn" :disabled="page <= 1" @click="page--">上一页</button><span>{{ page }} / {{ pages }}</span><button class="btn" :disabled="page >= pages" @click="page++">下一页</button><select v-model.number="scale" aria-label="PDF 缩放"><option :value="0.75">75%</option><option :value="1">100%</option><option :value="1.5">150%</option></select></div><p class="error-text">{{ error }}</p><canvas ref="canvas"></canvas></div></template>
+<template><div class="pdf-preview"><div class="actions"><button class="btn" :disabled="page <= 1" @click="page--">{{ t("上一页") }}</button><span>{{ page }} / {{ pages }}</span><button class="btn" :disabled="page >= pages" @click="page++">{{ t("下一页") }}</button><select v-model.number="scale" :aria-label="t(&quot;PDF 缩放&quot;)"><option :value="0.75">75%</option><option :value="1">100%</option><option :value="1.5">150%</option></select></div><p class="error-text">{{ t(error) }}</p><canvas ref="canvas"></canvas></div></template>

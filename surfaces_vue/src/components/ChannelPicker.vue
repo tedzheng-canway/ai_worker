@@ -1,4 +1,5 @@
 <script setup>
+import { t } from '../i18n';
 import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue';
 import { getConnectors } from '../api';
 import { getRecentChannels, slackChannels, checked } from '../p2api';
@@ -9,4 +10,4 @@ watch(()=>props.modelValue,value=>{clearTimeout(timer);const id=++version;hits.v
 onMounted(async()=>{try{recent.value=await getRecentChannels();const slack=(await getConnectors()).find(c=>c.name==='slack'&&c.connected);teams.value=slack?(slack.mode==='relay'?(slack.workspaces || []).map(w=>w.team_id):['default']):[];}catch(e){error.value=e.message;}});
 onBeforeUnmount(()=>{version++;clearTimeout(timer);});
 </script>
-<template><div class="channel-picker"><label>{{ label }}<input :value="modelValue" placeholder="搜索频道或输入 slack:T123/C123" @input="emit('update:modelValue',$event.target.value);open=true" @focus="open=true" @keydown.esc="open=false" /></label><div v-if="open && options.length" class="channel-options"><button v-for="row in options" :key="row.address" type="button" @click="emit('update:modelValue',row.address);open=false">{{ row.name }} <small>{{ row.address }}</small></button></div><small v-if="error" class="error-text">{{ error }}</small></div></template>
+<template><div class="channel-picker"><label>{{ label }}<input :value="modelValue" :placeholder="t(&quot;搜索频道或输入 slack:T123/C123&quot;)" @input="emit('update:modelValue',$event.target.value);open=true" @focus="open=true" @keydown.esc="open=false" /></label><div v-if="open && options.length" class="channel-options"><button v-for="row in options" :key="row.address" type="button" @click="emit('update:modelValue',row.address);open=false">{{ row.name }} <small>{{ row.address }}</small></button></div><small v-if="error" class="error-text">{{ t(error) }}</small></div></template>

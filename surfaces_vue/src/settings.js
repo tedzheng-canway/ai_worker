@@ -1,5 +1,5 @@
 export function requireSuccess(result) {
-  if (result?.ok === false) throw new Error(result.error || "保存失败，请重试");
+  if (result?.ok === false || result?.error) throw new Error(result.error || "保存失败，请重试");
   return result;
 }
 

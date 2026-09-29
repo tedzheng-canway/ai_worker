@@ -1,4 +1,5 @@
 <script setup>
+import { t } from '../i18n';
 import { computed, ref, watch } from "vue";
 
 const props = defineProps({ item: { type: Object, required: true } });
@@ -55,22 +56,22 @@ watch(step, () => { selected.value = []; text.value = ""; });
 <template>
   <section class="question-prompt">
     <div class="question-step">
-      <button v-if="grouped && step > 0" title="上一题" @click="previous">‹</button>
-      <strong>{{ spec.header || '问题' }}</strong>
+      <button v-if="grouped && step > 0" :title="t(&quot;上一题&quot;)" @click="previous">‹</button>
+      <strong>{{ spec.header || t("问题") }}</strong>
       <span v-if="grouped">{{ step + 1 }} / {{ specs.length }}</span>
-      <span v-if="grouped && step + 1 < specs.length">下一项：{{ specs[step + 1].header || `问题 ${step + 2}` }}</span>
+      <span v-if="grouped && step + 1 < specs.length">{{ t("下一项：") }}{{ specs[step + 1].header || (t("问题 ") + (step + 2)) }}</span>
     </div>
     <h3>{{ spec.question }}</h3>
     <div v-if="spec.options.length" class="question-options">
       <button v-for="(option, index) in spec.options" :key="`${optionLabel(option)}-${index}`" :class="{ selected: selected.includes(optionLabel(option)) }" @click="pick(option)">
-        <span class="option-title"><span v-if="spec.multi && selected.includes(optionLabel(option))">✓</span>{{ optionLabel(option) }}<em v-if="recommended(option)">推荐</em></span>
+        <span class="option-title"><span v-if="spec.multi && selected.includes(optionLabel(option))">✓</span>{{ optionLabel(option) }}<em v-if="recommended(option)">{{ t("推荐") }}</em></span>
         <small v-if="optionDescription(option)">{{ optionDescription(option) }}</small>
       </button>
     </div>
-    <button v-if="spec.multi && spec.options.length" class="btn primary question-submit" :disabled="!selected.length" @click="submitSelected">提交所选内容</button>
+    <button v-if="spec.multi && spec.options.length" class="btn primary question-submit" :disabled="!selected.length" @click="submitSelected">{{ t("提交所选内容") }}</button>
     <form v-if="spec.allowText || !spec.options.length" class="question-text" @submit.prevent="submitText">
-      <input v-model="text" :placeholder="spec.options.length ? '也可以输入自己的回答' : '请输入回答'" autofocus />
-      <button class="btn primary" :disabled="!text.trim()">发送</button>
+      <input v-model="text" :placeholder="spec.options.length ? t(&quot;也可以输入自己的回答&quot;) : t(&quot;请输入回答&quot;)" autofocus />
+      <button class="btn primary" :disabled="!text.trim()">{{ t("发送") }}</button>
     </form>
   </section>
 </template>

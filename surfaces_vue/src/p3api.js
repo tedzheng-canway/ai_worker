@@ -1,0 +1,16 @@
+import { request } from './api.js';
+const enc = encodeURIComponent;
+const post = (path, body) => request(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+export const getPersonaDetail = id => request(`/v1/personas/${enc(id)}`);
+export const installPersona = body => post('/v1/personas/install', body);
+export const deletePersona = id => request(`/v1/personas/${enc(id)}`, { method: 'DELETE' });
+export const exportPersona = (id, dir) => post(`/v1/personas/${enc(id)}/export`, { dir });
+export const setPersonaConnection = (id, connector, enabled) => post(`/v1/personas/${enc(id)}/connections`, { connector, enabled });
+export const getGallery = () => request('/v1/cloud/gallery');
+export const getGalleryDetail = slug => request(`/v1/cloud/gallery/${enc(slug)}`);
+export const verifyProvider = (name, fields) => post('/v1/providers/verify', { name, fields });
+export const providerSignin = () => post('/v1/providers/openai-codex/signin', {});
+export const providerSignout = () => post('/v1/providers/openai-codex/signout', {});
+export const providerAuthStatus = () => request('/v1/providers/openai-codex/status');
+export const setOnboarded = value => post('/v1/settings/onboarded', { value });
+export const setAutoApproveShadow = auto_approve_shadow => post('/v1/settings/auto-approve-shadow', { auto_approve_shadow });

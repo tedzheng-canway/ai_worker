@@ -9,7 +9,11 @@ export async function request(path, options = {}) {
   const token = apiToken();
   if (token) headers.set(tokenHeader, token);
   const response = await globalThis.fetch(`${httpBase()}${path}`, { ...options, headers });
-  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    const detail = body?.error || (typeof body?.detail === 'string' ? body.detail : '');
+    throw new Error(`${response.status} ${detail || response.statusText}`);
+  }
   return response.json();
 }
 
@@ -45,6 +49,7 @@ export const getMessages = async (id) => (await request(`/v1/sessions/${encodeUR
 export const getRecentWorkspaces = async () => (await request("/v1/workspaces/recent")).workspaces || [];
 export const pickFolderViaServer = async () => {
   const result = await request("/v1/workspaces/pick", { method: "POST" });
+  if (result.error) throw new Error(result.error);
   return result.ok && result.path ? result.path : null;
 };
 export const openWorkspace = (path) => request("/v1/workspaces/open", json("POST", { path, create: false }));
@@ -99,7 +104,9 @@ export const deleteMcpServer = (name) => request(`/v1/mcp/${encodeURIComponent(n
 
 export async function getAudit(filters = {}) {
   const query = new URLSearchParams(Object.entries(filters).filter(([, value]) => value != null && value !== ""));
-  return (await request(`/v1/audit${query.size ? `?${query}` : ""}`)).events || [];
+  const result = await request(`/v1/audit${query.size ? `?${query}` : ""}`);
+  if (result.ok === false || result.error) throw new Error(result.error || '无法加载审计记录');
+  return result.events || [];
 }
 
 export const setDefaultModel = (value) => request("/v1/settings/default-model", json("POST", { model: value }));

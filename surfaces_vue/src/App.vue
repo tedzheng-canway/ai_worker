@@ -1,9 +1,17 @@
 <script setup>
+import { t } from './i18n';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { createTempWorkspace, deleteSession, finalizeAutomationRun, getHealth, getMessages, getPersonas, getSessions, getSettings, setSessionFlags, Session } from "./api";
 import { approvalLabels, approvalMeta, historyItems } from "./history";
 import { contextUsage, historyUsage, settingsWithDefaults } from "./settings";
 import { ManualRuns } from "./manualRuns";
+import OnboardingView from './components/OnboardingView.vue';
+import { dark, setTheme } from './preferences';
+import { memoryNotice, undoMemory } from './p3';
+import { updateMemory, deleteMemory } from './api';
+const onboarding = ref(false);
+async function finishSetup(){ onboarding.value=false; await reloadConfig(); }
+async function undoSavedMemory(item){ if(item.busy || item.undone)return; item.busy=true; item.error='';try { requireSuccess(await undoMemory(item,{updateMemory,deleteMemory})); item.undone=true; window.dispatchEvent(new Event('ocw-memory-changed')); } catch(e){item.error=e.message;} finally {item.busy=false;} }
 import AuditView from "./components/AuditView.vue";
 import AutomationsView from "./components/AutomationsView.vue";
 import BoardView from "./components/BoardView.vue";
@@ -90,7 +98,7 @@ const surface = ref("session");
 const rowMenu = ref("");
 const deleteArmed = ref("");
 const showArchived = ref(false);
-const dark = ref(localStorage.getItem("openworker-theme") === "dark");
+
 const scroller = ref(null);
 let socket = null;
 let refreshTimer = null;
@@ -146,7 +154,7 @@ const modeOptions = computed(() => [
   { value: "interactive", label: "每次确认", description: "执行敏感操作前向你确认" },
   ...(config.value.auto_approve ? [{ value: "auto-approve", label: "自动审批", description: "自动批准低风险操作" }] : []),
   { value: "auto", label: "绕过审批", description: "直接执行所有操作" },
-]);
+].map(row=>({...row,label:t(row.label),description:t(row.description)})));
 const modelOptions = computed(() => [...new Set([model.value, ...models.value].filter(Boolean))].map((item) => ({ value: item, label: config.value.model_labels?.[item] || (item.includes(":") ? item.split(":").slice(1).join(":") : item), description: models.value.includes(item) ? item : `${item} · 当前会话模型` })));
 const requestKinds = new Set(["approval", "dirreq", "toolreq", "planreq", "teamreq", "itemsreq", "question"]);
 const pending = computed(() => unattended.value ? null : [...messages.value].reverse().find((item) => requestKinds.has(item.kind) && !item.resolved && !sessionInbox.value.some(row=>inboxMatches(item,row))));
@@ -162,6 +170,7 @@ function updateTool(data) {
 
 function handleEvent(event) {
   const data = event.data || {};
+  if(event.type==='memory_saved'){ const notice=memoryNotice(data); if(notice)messages.value.push(notice); window.dispatchEvent(new Event('ocw-memory-changed')); return; }
   if(requestEvents.has(event.type))refreshBackground();
   if (event.type !== 'compacting') compacting.value = false;
   if (event.type === "ready") {
@@ -321,6 +330,7 @@ function openConnection(id, folder, persona, openingText = "") {
       if (['turn_done', 'error', 'interrupted'].includes(event.type)) connection.running = false;
       void manualRuns.event(id, event).then(releaseInactiveConnections);
       if (id === sessionId.value) handleEvent(event);
+      else if(event.type==='memory_saved')window.dispatchEvent(new Event('ocw-memory-changed'));
     },
     onOpen: () => {
       connection.connected = true;
@@ -440,7 +450,7 @@ async function selectSession(item) {
   connect();
 }
 
-function newSession(persona = agent.value) {
+function newSession(persona = personas.value.find(p=>p.default && p.enabled!==false)?.id || agent.value) {
   resetSessionUi();
   surface.value = "session";
   sessionId.value = newId();
@@ -490,6 +500,7 @@ async function reloadConfig() {
     config.value = settingsWithDefaults(nextSettings);
     models.value = nextSettings.models || [];
     personas.value = nextPersonas;
+    await refreshSessions();
     showAllArchived.value = false;
     expandedGroups.value = {};
     if (mode.value === "auto-approve" && !config.value.auto_approve) changeMode("interactive");
@@ -500,10 +511,7 @@ async function reloadConfig() {
   } catch (error) { configError.value = `设置同步失败：${error.message}`; }
 }
 
-function setTheme(value) {
-  dark.value = value;
-  localStorage.setItem("openworker-theme", value ? "dark" : "light");
-}
+
 
 function send() {
   let text = draft.value.trim();
@@ -599,10 +607,7 @@ function resolveRequest(result) {
 
 function changeMode(value) { mode.value = value === "auto-approve" && !config.value.auto_approve ? "interactive" : value; socket?.setMode(mode.value); }
 function changeModel(value) { model.value = value; socket?.setModel(value); }
-function toggleTheme() {
-  dark.value = !dark.value;
-  localStorage.setItem("openworker-theme", dark.value ? "dark" : "light");
-}
+function toggleTheme() { setTheme(!dark.value); }
 function formatTime(ts) {
   if (!ts) return "";
   return new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -611,10 +616,10 @@ function compactAge(value) {
   const time = Date.parse(value || "");
   if (!time) return "";
   const minutes = Math.floor((Date.now() - time) / 60000);
-  if (minutes < 1) return "刚刚";
-  if (minutes < 60) return `${minutes} 分钟`;
-  if (minutes < 1440) return `${Math.floor(minutes / 60)} 小时`;
-  return `${Math.floor(minutes / 1440)} 天`;
+  if (minutes < 1) return t("刚刚");
+  if (minutes < 60) return `${minutes} ${t('分钟')}`;
+  if (minutes < 1440) return `${Math.floor(minutes / 60)} ${t('小时')}`;
+  return `${Math.floor(minutes / 1440)} ${t('天')}`;
 }
 
 watch([messages, streaming, streamReasoning], () => nextTick(() => {
@@ -636,12 +641,13 @@ onMounted(async () => {
   try {
     const [health, settings, personaRows, sessionRows] = await Promise.all([getHealth(), getSettings(), getPersonas(), getSessions()]);
     config.value = settingsWithDefaults(settings);
+    onboarding.value = settings.onboarded === false;
     model.value = settings.model || settings.default_model || health.model || model.value;
     models.value = settings.models || [];
     personas.value = personaRows;
     sessions.value = sessionRows;
     if (sessionRows[0]) await selectSession(sessionRows[0]);
-    else connect();
+    else newSession();
     for (const entry of manualRunEntries.value) {
       if (manualRuns.watching(entry.session_id) && !connections.has(entry.session_id)) openConnection(entry.session_id, entry.workspace, entry.agent);
     }
@@ -666,97 +672,99 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="app" :class="{ 'sidebar-hidden': !sidebarOpen }">
+    <OnboardingView v-if="onboarding" @close="onboarding=false" @done="finishSetup" @change="reloadConfig" />
     <aside class="sidebar">
       <header class="brand">
         <div class="logo">O</div>
         <strong>AIWorker</strong>
-        <button class="icon-button pin" title="收起侧边栏" @click="sidebarOpen = false">‹</button>
+        <button class="icon-button pin" :title="t(&quot;收起侧边栏&quot;)" @click="sidebarOpen = false">‹</button>
       </header>
-      <button class="new-button" @click="newSession()"><span>＋</span> 新对话</button>
-      <button class="search-button" @click="searchOpen = true">⌕ 搜索对话 <small>Ctrl+K</small></button>
-      <label class="section-label">导航布局 <select :value="config.nav_layout || 'flat'" :disabled="actionBusy" @change="changeLayout($event.target.value)"><option value="flat">按时间</option><option value="grouped">按智能体 / 项目</option></select></label>
+      <button class="new-button" @click="newSession()"><span>＋</span>{{ t(" 新对话") }}</button>
+      <button class="search-button" @click="searchOpen = true">{{ t("⌕ 搜索对话 ") }}<small>Ctrl+K</small></button>
+      <label class="section-label">{{ t("导航布局 ") }}<select :value="config.nav_layout || 'flat'" :disabled="actionBusy" @change="changeLayout($event.target.value)"><option value="flat">{{ t("按时间") }}</option><option value="grouped">{{ t("按智能体 / 项目") }}</option></select></label>
       <nav class="session-list">
         <section v-for="group in sessionGroups" :key="group.key" class="session-group">
-        <div class="section-label group-title" :title="group.label">{{ group.label }}</div>
+        <div class="section-label group-title" :title="group.label">{{ ['pinned','recent'].includes(group.key) ? t(group.label) : group.label }}</div>
         <div v-for="item in (expandedGroups[group.key] ? group.items : group.items.slice(0,config.sessions_peek))" :key="item.session_id" class="session-row-wrap">
           <button class="session-row" :class="{ active: surface === 'session' && item.session_id === sessionId }" @click="selectSession(item)">
             <span class="session-icon">◇</span>
-            <span class="session-copy"><strong>{{ item.title || '未命名对话' }}</strong><small>{{ item.agent }} · {{ compactAge(item.updated_at) }}</small></span>
+            <span class="session-copy"><strong>{{ item.title || t("未命名对话") }}</strong><small>{{ item.agent }} · {{ compactAge(item.updated_at) }}</small></span>
             <span v-if="item.liveness === 'working'" class="live-dot"></span>
           </button>
-          <button class="row-menu-button" title="对话操作" @click.stop="toggleRowMenu(item.session_id)">⋯</button>
+          <button class="row-menu-button" :title="t(&quot;对话操作&quot;)" @click.stop="toggleRowMenu(item.session_id)">⋯</button>
           <div v-if="rowMenu === item.session_id" class="row-menu" role="menu" @click.stop>
-            <button @click="startRename(item)">重命名</button>
-            <button :disabled="actionBusy" @click="sessionAction(() => setSessionFlags(item.session_id, { pinned: !item.pinned }))">{{ item.pinned ? '取消置顶' : '置顶' }}</button>
-            <button @click="archiveConversation(item)">▣ 归档</button>
+            <button @click="startRename(item)">{{ t("重命名") }}</button>
+            <button :disabled="actionBusy" @click="sessionAction(() => setSessionFlags(item.session_id, { pinned: !item.pinned }))">{{ item.pinned ? t("取消置顶") : t("置顶") }}</button>
+            <button @click="archiveConversation(item)">{{ t("▣ 归档") }}</button>
             <div class="menu-separator"></div>
-            <button class="danger-item" @click="removeConversation(item)">{{ deleteArmed === item.session_id ? '再次点击确认删除' : '⌫ 删除' }}</button>
+            <button class="danger-item" @click="removeConversation(item)">{{ deleteArmed === item.session_id ? t("再次点击确认删除") : t("⌫ 删除") }}</button>
           </div>
         </div>
-        <button v-if="group.items.length > config.sessions_peek" class="archived-toggle" @click="expandedGroups[group.key] = !expandedGroups[group.key]">{{ expandedGroups[group.key] ? '收起对话' : `显示更多（${group.items.length - config.sessions_peek}）` }}</button>
+        <button v-if="group.items.length > config.sessions_peek" class="archived-toggle" @click="expandedGroups[group.key] = !expandedGroups[group.key]">{{ expandedGroups[group.key] ? t("收起对话") : (t("显示更多（") + (group.items.length - config.sessions_peek) + "）") }}</button>
         </section>
-        <div v-if="!recentSessions.length && !archivedSessions.length" class="empty-side">还没有历史对话</div>
+        <div v-if="!recentSessions.length && !archivedSessions.length" class="empty-side">{{ t("还没有历史对话") }}</div>
         <div v-if="archivedSessions.length" class="archived-section">
-          <button class="archived-toggle" @click="showArchived = !showArchived"><span>{{ showArchived ? '⌄' : '›' }}</span>已归档（{{ archivedSessions.length }}）</button>
+          <button class="archived-toggle" @click="showArchived = !showArchived"><span>{{ showArchived ? '⌄' : '›' }}</span>{{ t("已归档（") }}{{ archivedSessions.length }}）</button>
           <div v-if="showArchived">
             <div v-for="item in shownArchived" :key="item.session_id" class="session-row-wrap">
-              <button class="session-row archived-row" @click="selectSession(item)"><span class="session-icon">◇</span><span class="session-copy"><strong>{{ item.title || '未命名对话' }}</strong><small>{{ item.agent }} · {{ compactAge(item.updated_at) }}</small></span></button>
-              <button class="row-menu-button" title="对话操作" @click.stop="toggleRowMenu(item.session_id)">⋯</button>
+              <button class="session-row archived-row" @click="selectSession(item)"><span class="session-icon">◇</span><span class="session-copy"><strong>{{ item.title || t("未命名对话") }}</strong><small>{{ item.agent }} · {{ compactAge(item.updated_at) }}</small></span></button>
+              <button class="row-menu-button" :title="t(&quot;对话操作&quot;)" @click.stop="toggleRowMenu(item.session_id)">⋯</button>
               <div v-if="rowMenu === item.session_id" class="row-menu" role="menu" @click.stop>
-                <button @click="startRename(item)">重命名</button>
-                <button @click="archiveConversation(item)">↶ 取消归档</button>
+                <button @click="startRename(item)">{{ t("重命名") }}</button>
+                <button @click="archiveConversation(item)">{{ t("↶ 取消归档") }}</button>
                 <div class="menu-separator"></div>
-                <button class="danger-item" @click="removeConversation(item)">{{ deleteArmed === item.session_id ? '再次点击确认删除' : '⌫ 删除' }}</button>
+                <button class="danger-item" @click="removeConversation(item)">{{ deleteArmed === item.session_id ? t("再次点击确认删除") : t("⌫ 删除") }}</button>
               </div>
             </div>
           </div>
         </div>
       </nav>
-      <button v-if="showArchived && archivedSessions.length > config.sessions_peek" class="archived-toggle" @click="showAllArchived = !showAllArchived">{{ showAllArchived ? '收起归档' : '显示更多归档' }}</button>
+      <button v-if="showArchived && archivedSessions.length > config.sessions_peek" class="archived-toggle" @click="showAllArchived = !showAllArchived">{{ showAllArchived ? t("收起归档") : t("显示更多归档") }}</button>
       <nav class="surface-nav">
-        <button :class="{ active: surface === 'automations' }" @click="automationFocus='';surface = 'automations'"><span>◷</span>自动化<span v-if="automationUnread" class="badge">{{ automationUnread }}</span></button>
-        <button :class="{active:surface==='inbox'}" @click="surface='inbox'"><span>▤</span>收件箱<span v-if="inboxCount" class="badge">{{ inboxCount }}</span></button>
-        <button :class="{ active: surface === 'connectors' }" @click="openConnectors()"><span>⌁</span>连接器</button>
-        <button :class="{ active: surface === 'board' }" @click="surface = 'board'"><span>▦</span>任务看板</button>
-        <button :class="{ active: surface === 'audit' }" @click="surface = 'audit'"><span>◎</span>活动审计</button>
-        <button :class="{ active: surface === 'settings' }" @click="surface = 'settings'"><span>⚙</span>设置</button>
+        <button :class="{ active: surface === 'automations' }" @click="automationFocus='';surface = 'automations'"><span>◷</span>{{ t("自动化") }}<span v-if="automationUnread" class="badge">{{ automationUnread }}</span></button>
+        <button :class="{active:surface==='inbox'}" @click="surface='inbox'"><span>▤</span>{{ t("收件箱") }}<span v-if="inboxCount" class="badge">{{ inboxCount }}</span></button>
+        <button :class="{ active: surface === 'connectors' }" @click="openConnectors()"><span>⌁</span>{{ t("连接器") }}</button>
+        <button :class="{ active: surface === 'board' }" @click="surface = 'board'"><span>▦</span>{{ t("任务看板") }}</button>
+        <button :class="{ active: surface === 'audit' }" @click="surface = 'audit'"><span>◎</span>{{ t("活动审计") }}</button>
+        <button :class="{ active: surface === 'settings' }" @click="surface = 'settings'"><span>⚙</span>{{ t("设置") }}</button>
       </nav>
       <footer class="sidebar-footer">
-        <button @click="toggleTheme">{{ dark ? '☀' : '◐' }} {{ dark ? '浅色模式' : '深色模式' }}</button>
-        <span :class="['connection-dot', { online: connected }]"></span><small>{{ status }}</small>
+        <button @click="toggleTheme">{{ dark ? '☀' : '◐' }} {{ dark ? t("浅色模式") : t("深色模式") }}</button>
+        <span :class="['connection-dot', { online: connected }]"></span><small>{{ t(status) }}</small>
       </footer>
     </aside>
 
     <main class="main">
       <header class="topbar">
-        <button v-if="!sidebarOpen" class="icon-button" title="展开侧边栏" @click="sidebarOpen = true">☰</button>
-        <div class="title-block"><strong>{{ pageTitle }}</strong><small v-if="surface === 'session'">{{ activePersona?.name || agent }} · {{ model }}<template v-if="workspace"> · {{ workspace }}</template></small><small v-else>AIWorker</small></div>
-        <button v-if="surface === 'session'" class="icon-button" title="新对话" @click="newSession()">＋</button>
-        <template v-if="surface === 'session'"><button class="btn" @click="artifactPath = ''; panel = panel === 'files' ? '' : 'files'">文件</button><button class="btn" @click="loadSkills(); panel = panel === 'access' ? '' : 'access'">权限与项目</button></template>
+        <button v-if="!sidebarOpen" class="icon-button" :title="t(&quot;展开侧边栏&quot;)" @click="sidebarOpen = true">☰</button>
+        <div class="title-block"><strong>{{ surface === 'session' ? (activeSession?.title || t('新对话')) : t(pageTitle) }}</strong><small v-if="surface === 'session'">{{ activePersona?.name || agent }} · {{ model }}<template v-if="workspace"> · {{ workspace }}</template></small><small v-else>AIWorker</small></div>
+        <button v-if="surface === 'session'" class="icon-button" :title="t(&quot;新对话&quot;)" @click="newSession()">＋</button>
+        <template v-if="surface === 'session'"><button class="btn" @click="artifactPath = ''; panel = panel === 'files' ? '' : 'files'">{{ t("文件") }}</button><button class="btn" @click="loadSkills(); panel = panel === 'access' ? '' : 'access'">{{ t("权限与项目") }}</button></template>
       </header>
 
-      <p v-if="configError" class="error-text status-note" role="alert">{{ configError }} <button class="btn" @click="reloadConfig">重试同步</button></p>
-      <p v-if="actionError" class="error-text status-note" role="alert">{{ actionError }}</p>
+      <p v-if="config.model_ready===false" class="status-note">{{ t("当前默认模型尚未连接。") }}<button class="btn" @click="settingsTab='models';surface='settings'">{{ t("配置模型") }}</button></p>
+      <p v-if="configError" class="error-text status-note" role="alert">{{ t(configError) }} <button class="btn" @click="reloadConfig">{{ t("重试同步") }}</button></p>
+      <p v-if="actionError" class="error-text status-note" role="alert">{{ t(actionError) }}</p>
       <div v-for="entry in runNotes" :key="entry.run_id" class="status-note" role="status">
         {{ entry.note }}
-        <button class="btn" @click="selectSession(entry)">查看运行会话</button>
-        <button v-if="entry.state === 'completed'" class="btn" @click="manualRuns.finish(entry.session_id)">重试回写</button>
+        <button class="btn" @click="selectSession(entry)">{{ t("查看运行会话") }}</button>
+        <button v-if="entry.state === 'completed'" class="btn" @click="manualRuns.finish(entry.session_id)">{{ t("重试回写") }}</button>
       </div>
-      <p v-if="backgroundError" class="error-text status-note" role="alert">{{ backgroundError }} <button class="btn" @click="refreshBackground">重试</button></p>
-      <aside v-if="runToast" class="run-toast" role="status">自动化「{{ runToast.task_title }}」已开始运行 <button class="btn" @click="openRunSession(runToast);runToast=null">查看运行</button><button class="icon-button" aria-label="关闭运行通知" @click="runToast=null">×</button></aside>
+      <p v-if="backgroundError" class="error-text status-note" role="alert">{{ t(backgroundError) }} <button class="btn" @click="refreshBackground">{{ t("重试") }}</button></p>
+      <aside v-if="runToast" class="run-toast" role="status">{{ t("自动化「") }}{{ runToast.task_title }}{{ t("」已开始运行 ") }}<button class="btn" @click="openRunSession(runToast);runToast=null">{{ t("查看运行") }}</button><button class="icon-button" :aria-label="t(&quot;关闭运行通知&quot;)" @click="runToast=null">×</button></aside>
       <template v-if="surface === 'session'">
-      <div v-if="runContext || sessionId.startsWith('__run__')" class="automation-context">自动化运行：{{ runContext?.task_title || '历史任务' }} <button class="btn" @click="returnToAutomation">返回自动化{{ runContext?.task_id ? '详情' : '列表' }}</button></div>
-      <div v-if="activeSession?.team?.role || teamMembers.length>1" class="team-roster"><span>团队成员</span><button v-for="member in teamMembers" :key="member.session_id" class="btn" :disabled="member.session_id===sessionId" @click="selectSession(member)">{{ member.team?.name || member.team?.actor || member.title }} · {{ member.team?.status || member.liveness || '空闲' }} {{ member.team?.current_item || '' }}</button><button v-if="teamId" class="btn" @click="surface='teamchat'">团队聊天 <span v-if="activeSession?.team?.chat_unread" class="badge">{{ activeSession.team.chat_unread }}</span></button><button class="btn" @click="openBoard">团队看板</button></div>
-      <p v-if="unattended" class="status-note">无人值守已开启 · 待处理事项会保存在收件箱。</p>
+      <div v-if="runContext || sessionId.startsWith('__run__')" class="automation-context">{{ t("自动化运行：") }}{{ runContext?.task_title || t("历史任务") }} <button class="btn" @click="returnToAutomation">{{ t("返回自动化") }}{{ runContext?.task_id ? t("详情") : t("列表") }}</button></div>
+      <div v-if="activeSession?.team?.role || teamMembers.length>1" class="team-roster"><span>{{ t("团队成员") }}</span><button v-for="member in teamMembers" :key="member.session_id" class="btn" :disabled="member.session_id===sessionId" @click="selectSession(member)">{{ member.team?.name || member.team?.actor || member.title }} · {{ member.team?.status || member.liveness || t("空闲") }} {{ member.team?.current_item || '' }}</button><button v-if="teamId" class="btn" @click="surface='teamchat'">{{ t("团队聊天 ") }}<span v-if="activeSession?.team?.chat_unread" class="badge">{{ activeSession.team.chat_unread }}</span></button><button class="btn" @click="openBoard">{{ t("团队看板") }}</button></div>
+      <p v-if="unattended" class="status-note">{{ t("无人值守已开启 · 待处理事项会保存在收件箱。") }}</p>
       <div ref="scroller" class="conversation" @scroll="trackScroll" @dragover.prevent @drop="dropFiles">
         <section v-if="!messages.length && !streaming" class="hero">
           <div class="hero-mark">◇</div>
-          <h1>今天想完成什么？</h1>
-          <p>选择 Coworker，然后描述任务。AIWorker 会在本地工作区中协助你。</p>
+          <h1>{{ t("今天想完成什么？") }}</h1>
+          <p>{{ t("选择 Coworker，然后描述任务。AIWorker 会在本地工作区中协助你。") }}</p>
           <div class="suggestions">
-            <button @click="draft = '帮我梳理这个项目的结构和核心模块'">梳理项目结构 <span>→</span></button>
-            <button @click="draft = '检查当前项目并修复构建问题'">修复构建问题 <span>→</span></button>
-            <button @click="draft = '总结最近的代码改动'">总结代码改动 <span>→</span></button>
+            <button @click="draft = t(&quot;帮我梳理这个项目的结构和核心模块&quot;)">{{ t("梳理项目结构 ") }}<span>→</span></button>
+            <button @click="draft = t(&quot;检查当前项目并修复构建问题&quot;)">{{ t("修复构建问题 ") }}<span>→</span></button>
+            <button @click="draft = t(&quot;总结最近的代码改动&quot;)">{{ t("总结代码改动 ") }}<span>→</span></button>
           </div>
         </section>
 
@@ -766,22 +774,23 @@ onBeforeUnmount(() => {
               <div class="user-bubble">{{ item.text }}</div><small>{{ formatTime(item.ts) }}</small>
               <div v-if="item.attachments?.length" class="attachments"><div v-for="(file,i) in item.attachments" :key="i" class="attachment"><img v-if="file.kind === 'image'" :src="file.data_url" :alt="file.name" /><span>{{ file.name }}</span></div></div>
             </template>
-            <template v-else-if="item.kind === 'connector'"><div class="connector-message"><header tabindex="0" :title="[item.source.sender_id,item.source.channel_id].filter(Boolean).join(' · ')"><strong>{{ item.source.connector }} · {{ item.source.sender_name || item.source.sender_id || '外部消息' }}</strong><small>{{ item.source.channel_name || item.source.channel_id }} · {{ formatTime(item.ts) }}</small></header><p>{{ item.text }}</p><button v-if="item.source.board" class="btn" @click="openBoard">查看相关看板</button></div></template>
+            <template v-else-if="item.kind === 'connector'"><div class="connector-message"><header tabindex="0" :title="[item.source.sender_id,item.source.channel_id].filter(Boolean).join(' · ')"><strong>{{ item.source.connector }} · {{ item.source.sender_name || item.source.sender_id || t("外部消息") }}</strong><small>{{ item.source.channel_name || item.source.channel_id }} · {{ formatTime(item.ts) }}</small></header><p>{{ item.text }}</p><button v-if="item.source.board" class="btn" @click="openBoard">{{ t("查看相关看板") }}</button></div></template>
             <template v-else-if="item.kind === 'assistant'">
-              <details v-if="item.reasoning" class="reasoning"><summary>思考过程</summary><pre>{{ item.reasoning }}</pre></details>
+              <details v-if="item.reasoning" class="reasoning"><summary>{{ t("思考过程") }}</summary><pre>{{ item.reasoning }}</pre></details>
               <MarkdownView class="assistant-copy" :text="item.text" /><small>{{ formatTime(item.ts) }}</small>
             </template>
-            <template v-else-if="item.kind === 'steps'"><details class="tool-group" open><summary>工具步骤（{{ item.items.length }}）</summary><details v-for="(step,i) in item.items" :key="step.id || i" class="tool-card"><summary><span :class="['tool-status', step.status]"></span>{{ step.name }} <small>{{ step.status === 'running' ? '运行中' : step.status === 'denied' ? '已拒绝' : step.status === 'unknown' ? '结果未知' : step.status }}</small><small v-if="step.approvalOrigin"> · {{ approvalLabels[step.approvalOrigin] || step.approvalOrigin }}</small></summary><p v-if="step.approvalNote">{{ step.approvalNote }}</p><p v-if="step.approvalGrant">授权：{{ step.approvalGrant }}</p><pre>{{ JSON.stringify(step.args, null, 2) }}{{ '\n\n' + (step.preview || '') }}</pre><button v-if="step.approvalOrigin === 'reviewer_denied' && !step.overridden" class="btn" :disabled="running || !connected" @click="allowAnyway(step)">仍然允许一次</button></details></details></template>
-            <template v-else-if="item.kind === 'notice'"><div class="notice-line">{{ item.text }} <button v-if="item.retriable" class="btn" :disabled="running || !connected" @click="socket.retry(); running = true">重试</button></div></template>
-            <template v-else-if="item.kind === 'approval'"><div class="inline-card"><strong>允许执行 {{ item.name }}？</strong><p>{{ item.reason || '此操作需要你的确认。' }}</p></div></template>
+            <template v-else-if="item.kind === 'steps'"><details class="tool-group" open><summary>{{ t("工具步骤（") }}{{ item.items.length }}）</summary><details v-for="(step,i) in item.items" :key="step.id || i" class="tool-card"><summary><span :class="['tool-status', step.status]"></span>{{ step.name }} <small>{{ step.status === 'running' ? t("运行中") : step.status === 'denied' ? t("已拒绝") : step.status === 'unknown' ? t("结果未知") : step.status }}</small><small v-if="step.approvalOrigin"> · {{ t(approvalLabels[step.approvalOrigin] || step.approvalOrigin) }}</small></summary><p v-if="step.approvalNote">{{ step.approvalNote }}</p><p v-if="step.approvalGrant">{{ t("授权：") }}{{ step.approvalGrant }}</p><pre>{{ JSON.stringify(step.args, null, 2) }}{{ '\n\n' + (step.preview || '') }}</pre><button v-if="step.approvalOrigin === 'reviewer_denied' && !step.overridden" class="btn" :disabled="running || !connected" @click="allowAnyway(step)">{{ t("仍然允许一次") }}</button></details></details></template>
+            <template v-else-if="item.kind === 'memory'"><div class="memory-notice"><strong>{{ item.undone ? t("已撤销记忆") : typeof item.previous==='string' ? t("已修改记忆") : t("已新增记忆") }}</strong><p>{{ item.text }}</p><button v-if="!item.undone" class="btn" :disabled="item.busy" @click="undoSavedMemory(item)">{{ t("撤销记忆") }}</button><p v-if="item.error" class="error-text" role="alert">{{ item.error }}</p></div></template>
+            <template v-else-if="item.kind === 'notice'"><div class="notice-line">{{ item.text }} <button v-if="item.retriable" class="btn" :disabled="running || !connected" @click="socket.retry(); running = true">{{ t("重试") }}</button></div></template>
+            <template v-else-if="item.kind === 'approval'"><div class="inline-card"><strong>{{ t("允许执行 ") }}{{ item.name }}？</strong><p>{{ item.reason || t("此操作需要你的确认。") }}</p></div></template>
             <template v-else-if="item.kind === 'question'"><div class="inline-card"><strong>{{ item.text }}</strong></div></template>
           </article>
-          <article v-if="streaming || streamReasoning" class="message assistant"><details v-if="streamReasoning" class="reasoning" open><summary>思考过程</summary><pre>{{ streamReasoning }}</pre></details><MarkdownView class="assistant-copy" :text="streaming" /><span v-if="streaming" class="cursor"></span></article>
-          <div v-if="running && (compacting || !streaming)" class="thinking-row"><span></span>{{ compacting ? '正在压缩上下文…' : '正在处理任务…' }}</div>
+          <article v-if="streaming || streamReasoning" class="message assistant"><details v-if="streamReasoning" class="reasoning" open><summary>{{ t("思考过程") }}</summary><pre>{{ streamReasoning }}</pre></details><MarkdownView class="assistant-copy" :text="streaming" /><span v-if="streaming" class="cursor"></span></article>
+          <div v-if="running && (compacting || !streaming)" class="thinking-row"><span></span>{{ compacting ? t("正在压缩上下文…") : t("正在处理任务…") }}</div>
         </div>
       </div>
-      <button v-if="!atBottom" class="btn return-bottom" @click="scrollBottom">↓ 回到底部</button>
-      <details v-if="todos.length" class="todo-progress"><summary>任务进度 {{ todos.filter(t => t.status === 'completed').length }} / {{ todos.length }}</summary><div v-for="(todo,i) in todos" :key="i"><span>{{ todo.status === 'completed' ? '✓' : todo.status === 'in_progress' ? '◉' : '○' }}</span> {{ todo.content }}</div></details>
+      <button v-if="!atBottom" class="btn return-bottom" @click="scrollBottom">{{ t("↓ 回到底部") }}</button>
+      <details v-if="todos.length" class="todo-progress"><summary>{{ t("任务进度 ") }}{{ todos.filter(t => t.status === 'completed').length }} / {{ todos.length }}</summary><div v-for="(todo,i) in todos" :key="i"><span>{{ todo.status === 'completed' ? '✓' : todo.status === 'in_progress' ? '◉' : '○' }}</span> {{ todo.content }}</div></details>
 
       <div v-if="sessionInbox.length" class="inline-inbox"><InboxCard v-for="item in sessionInbox" :key="item.id" :item="item" :live-item="messages.find(row=>row.inboxId===item.id)" :auto-approve="mode==='auto-approve'" inline @resolved="resolvedInbox" /></div>
       <section v-if="pending" :class="pending.kind === 'question' ? 'question-bar' : 'request-bar'">
@@ -790,29 +799,29 @@ onBeforeUnmount(() => {
       </section>
 
       <footer class="composer-area">
-        <details v-if="totalTokens" class="usage-totals"><summary>累计用量 {{ totalTokens.toLocaleString() }} tokens</summary><div v-for="(row,name) in totals" :key="name">{{ name }}：输入 {{ row.input }} · 输出 {{ row.output }} · 缓存读取 {{ row.cache_read }} · 缓存写入 {{ row.cache_write }}</div></details>
+        <details v-if="totalTokens" class="usage-totals"><summary>{{ t("累计用量 ") }}{{ totalTokens.toLocaleString() }} tokens</summary><div v-for="(row,name) in totals" :key="name">{{ name }}{{ t("：输入 ") }}{{ row.input }}{{ t(" · 输出 ") }}{{ row.output }}{{ t(" · 缓存读取 ") }}{{ row.cache_read }}{{ t(" · 缓存写入 ") }}{{ row.cache_write }}</div></details>
         <div v-if="config.context_bar" class="context-usage" role="status">
           <template v-if="usage && contextWindow">
-            <span>上下文 {{ contextPercent }}% · {{ usage.tokens.toLocaleString() }} / {{ contextWindow.toLocaleString() }} tokens</span>
-            <progress :value="contextPercent" max="100" aria-label="上下文使用进度"></progress>
+            <span>{{ t("上下文 ") }}{{ contextPercent }}% · {{ usage.tokens.toLocaleString() }} / {{ contextWindow.toLocaleString() }} tokens</span>
+            <progress :value="contextPercent" max="100" :aria-label="t(&quot;上下文使用进度&quot;)"></progress>
           </template>
-          <span v-else>{{ usage ? `上下文 ${usage.tokens.toLocaleString()} tokens（模型容量未知）` : '上下文用量：等待模型返回数据' }}</span>
+          <span v-else>{{ usage ? (t("上下文 ") + (usage.tokens.toLocaleString()) + t(" tokens（模型容量未知）")) : t("上下文用量：等待模型返回数据") }}</span>
         </div>
-        <p v-if="attachmentError" class="error-text" role="alert">{{ attachmentError }}</p>
+        <p v-if="attachmentError" class="error-text" role="alert">{{ t(attachmentError) }}</p>
         <div class="composer" @dragover.prevent @drop="dropFiles">
-          <div v-if="attachments.length" class="attachments"><div v-for="(file,i) in attachments" :key="i" class="attachment"><img v-if="file.kind === 'image'" :src="file.data_url" :alt="file.name" /><details v-else-if="file.kind === 'text'"><summary>{{ file.name }}</summary><pre>{{ file.text.slice(0,4000) }}</pre></details><span v-else>{{ file.name }}</span><button type="button" :aria-label="`移除附件 ${file.name}`" @click="attachments.splice(i,1)">×</button></div></div>
-          <div v-if="chosenSkill" class="skill-chip">/{{ chosenSkill }}<button aria-label="取消技能" @click="chosenSkill = ''">×</button></div>
-          <div v-if="slashOpen" class="slash-menu" role="listbox" aria-label="选择技能"><button v-for="(skill,i) in slashSkills" :key="skill.name" :class="{active: i === skillIndex}" role="option" :aria-selected="i === skillIndex" @mousedown.prevent @click="chooseSkill(skill)">/{{ skill.name }} <small>{{ skill.description }}</small></button><p v-if="!slashSkills.length">没有匹配的已启用技能，按 Esc 可发送普通文字。</p></div>
-          <textarea v-model="draft" :disabled="!connected && !needsWorkspace" rows="1" :placeholder="needsWorkspace ? '描述任务，发送时选择工作目录' : connected ? '描述任务，Enter 发送，Shift + Enter 换行' : '等待本地服务连接…'" @keydown="keydown" @paste="pasteFiles"></textarea>
+          <div v-if="attachments.length" class="attachments"><div v-for="(file,i) in attachments" :key="i" class="attachment"><img v-if="file.kind === 'image'" :src="file.data_url" :alt="file.name" /><details v-else-if="file.kind === 'text'"><summary>{{ file.name }}</summary><pre>{{ file.text.slice(0,4000) }}</pre></details><span v-else>{{ file.name }}</span><button type="button" :aria-label="(t(&quot;移除附件 &quot;) + (file.name))" @click="attachments.splice(i,1)">×</button></div></div>
+          <div v-if="chosenSkill" class="skill-chip">/{{ chosenSkill }}<button :aria-label="t(&quot;取消技能&quot;)" @click="chosenSkill = ''">×</button></div>
+          <div v-if="slashOpen" class="slash-menu" role="listbox" :aria-label="t(&quot;选择技能&quot;)"><button v-for="(skill,i) in slashSkills" :key="skill.name" :class="{active: i === skillIndex}" role="option" :aria-selected="i === skillIndex" @mousedown.prevent @click="chooseSkill(skill)">/{{ skill.name }} <small>{{ skill.description }}</small></button><p v-if="!slashSkills.length">{{ t("没有匹配的已启用技能，按 Esc 可发送普通文字。") }}</p></div>
+          <textarea v-model="draft" :disabled="!connected && !needsWorkspace" rows="1" :placeholder="needsWorkspace ? t(&quot;描述任务，发送时选择工作目录&quot;) : connected ? t(&quot;描述任务，Enter 发送，Shift + Enter 换行&quot;) : t(&quot;等待本地服务连接…&quot;)" @keydown="keydown" @paste="pasteFiles"></textarea>
           <div class="composer-toolbar">
             <div class="selectors">
-              <button class="btn" :disabled="attaching" title="添加附件" @click="fileInput.click()">{{ attaching ? '读取中…' : '＋ 附件' }}</button><input ref="fileInput" type="file" multiple hidden @change="addFiles($event.target.files); $event.target.value = ''" />
-              <SelectMenu :model-value="agent" :options="personaOptions" icon="◇" label="选择智能体" @change="changePersona" />
-              <SelectMenu :model-value="mode" :options="modeOptions" icon="◉" label="选择权限模式" @change="changeMode" />
-              <SelectMenu v-if="modelOptions.length" class="model-selector" :model-value="model" :options="modelOptions" icon="✦" label="选择模型" wide @change="changeModel" />
+              <button class="btn" :disabled="attaching" :title="t(&quot;添加附件&quot;)" @click="fileInput.click()">{{ attaching ? t("读取中…") : t("＋ 附件") }}</button><input ref="fileInput" type="file" multiple hidden @change="addFiles($event.target.files); $event.target.value = ''" />
+              <SelectMenu :model-value="agent" :options="personaOptions" icon="◇" :label="t(&quot;选择智能体&quot;)" @change="changePersona" />
+              <SelectMenu :model-value="mode" :options="modeOptions" icon="◉" :label="t(&quot;选择权限模式&quot;)" @change="changeMode" />
+              <SelectMenu v-if="modelOptions.length" class="model-selector" :model-value="model" :options="modelOptions" icon="✦" :label="t(&quot;选择模型&quot;)" wide @change="changeModel" />
             </div>
-            <button v-if="running" class="stop-button" title="停止" @click="socket.interrupt()">■</button>
-            <button v-else class="send-button" :disabled="!canSend || (!connected && !needsWorkspace)" title="发送" aria-label="发送" @click="send">↑</button>
+            <button v-if="running" class="stop-button" :title="t(&quot;停止&quot;)" @click="socket.interrupt()">■</button>
+            <button v-else class="send-button" :disabled="!canSend || (!connected && !needsWorkspace)" :title="t(&quot;发送&quot;)" :aria-label="t(&quot;发送&quot;)" @click="send">↑</button>
           </div>
         </div>
       </footer>
@@ -823,13 +832,13 @@ onBeforeUnmount(() => {
       <InboxView v-else-if="surface==='inbox'" @open-session="selectSession" @open-connectors="openConnectors" @change="refreshBackground" />
       <TeamChatView v-else-if="surface==='teamchat'" :team-id="teamId" @close="surface='session';refreshSessions()" />
       <AuditView v-else-if="surface === 'audit'" />
-      <SettingsView v-else :dark="dark" :initial-tab="settingsTab" @theme-change="setTheme" @settings-change="reloadConfig" />
+      <SettingsView v-else :dark="dark" :initial-tab="settingsTab" @theme-change="setTheme" @settings-change="reloadConfig" @connectors="openConnectors" @use-persona="newSession" @setup="onboarding=true" />
     </main>
     <ArtifactPanel v-if="surface === 'session' && panel === 'files'" :session-id="sessionId" :workspace="workspace" :refresh-key="artifactVersion" :initial-path="artifactPath" @close="panel = ''" />
     <SessionAccess v-if="surface === 'session' && panel === 'access'" :key="sessionId" :session-id="sessionId" :workspace="workspace" :skills="skills" :running="running" :temporary="temporary" :persona="agent" @integrations-change="refreshBackground" @open-connectors="openConnectors" @close="panel = ''" @saved="savedProject" @skills-change="loadSkills" @binding-change="bindingVersion++" @open-board="openBoard" @open-memory="settingsTab = 'memory'; surface = 'settings'; panel = ''" />
     <SessionSearch v-if="searchOpen" :sessions="sessions" :personas="personas" @close="searchOpen = false" @select="selectSession" />
-    <div v-if="renameTarget" class="dialog-overlay" @click.self="renameTarget = null"><form class="search-dialog form-card" role="dialog" aria-label="重命名对话" @submit.prevent="saveRename"><h3>重命名对话</h3><input v-model="renameDraft" aria-label="对话标题" required autofocus /><p v-if="actionError" class="error-text">{{ actionError }}</p><div class="actions"><button class="btn primary" :disabled="actionBusy || !renameDraft.trim()">保存名称</button><button type="button" class="btn" @click="renameTarget = null">取消</button></div></form></div>
-    <div v-if="trustRequest" class="dialog-overlay"><section class="search-dialog form-card" role="dialog" aria-label="工作区命令信任"><h3>信任工作区声明的命令？</h3><p>{{ trustRequest.workspace }}</p><pre>{{ (trustRequest.requested_commands || []).join('\n') }}</pre><p>信任后这些声明的命令可按工作区规则执行。你可以在“权限与项目”中撤销。</p><p v-if="trustError" class="error-text">{{ trustError }}</p><div class="actions"><button class="btn" :disabled="trustSaving" @click="trustRequest = null">继续逐次询问</button><button class="btn primary" :disabled="trustSaving" @click="trustWorkspace">信任此工作区</button></div></section></div>
+    <div v-if="renameTarget" class="dialog-overlay" @click.self="renameTarget = null"><form class="search-dialog form-card" role="dialog" :aria-label="t(&quot;重命名对话&quot;)" @submit.prevent="saveRename"><h3>{{ t("重命名对话") }}</h3><input v-model="renameDraft" :aria-label="t(&quot;对话标题&quot;)" required autofocus /><p v-if="actionError" class="error-text">{{ t(actionError) }}</p><div class="actions"><button class="btn primary" :disabled="actionBusy || !renameDraft.trim()">{{ t("保存名称") }}</button><button type="button" class="btn" @click="renameTarget = null">{{ t("取消") }}</button></div></form></div>
+    <div v-if="trustRequest" class="dialog-overlay"><section class="search-dialog form-card" role="dialog" :aria-label="t(&quot;工作区命令信任&quot;)"><h3>{{ t("信任工作区声明的命令？") }}</h3><p>{{ trustRequest.workspace }}</p><pre>{{ (trustRequest.requested_commands || []).join('\n') }}</pre><p>{{ t("信任后这些声明的命令可按工作区规则执行。你可以在“权限与项目”中撤销。") }}</p><p v-if="trustError" class="error-text">{{ t(trustError) }}</p><div class="actions"><button class="btn" :disabled="trustSaving" @click="trustRequest = null">{{ t("继续逐次询问") }}</button><button class="btn primary" :disabled="trustSaving" @click="trustWorkspace">{{ t("信任此工作区") }}</button></div></section></div>
     <FolderDialog v-if="sendGate" :persona-name="activePersona?.name || agent" :external-error="folderError" @pick="resolveSendFolder" @temp="startTempAndSend" @cancel="cancelSendFolder" />
   </div>
 </template>

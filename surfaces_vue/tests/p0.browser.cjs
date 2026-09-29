@@ -14,7 +14,7 @@ const server = http.createServer((req, res) => {
 });
 
 async function fixture(browser, base, configure) {
-  const context = await browser.newContext();
+  const context = await browser.newContext({ locale: 'zh-CN' });
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));

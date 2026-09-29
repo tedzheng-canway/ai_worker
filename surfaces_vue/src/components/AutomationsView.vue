@@ -1,4 +1,5 @@
 <script setup>
+import { t } from '../i18n';
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { createAutomation, deleteAutomation, getAutomation, getAutomations, markAutomationSeen, runAutomation, updateAutomation, getConnectors } from '../api';
 import { checked } from '../p2api';
@@ -15,7 +16,7 @@ const template=ref(null),repository=ref(''),channel=ref(''),consent=ref(false),d
 const deliveryTemplate=computed(()=>template.value ? {...template.value,delivery:template.value.delivery || (template.value.id==='brief' && delivery.value==='slack')} : null);
 const missing=computed(()=>(template.value ? [...template.value.needs,...(template.value.id==='brief'&&delivery.value==='slack'?['slack']:[])] : []).filter(name=>!connectors.value.some(c=>c.name===name&&c.connected)) || []);
 let timer,disposed=false,version=0;
-const fmt=value=>value ? new Date(value*1000).toLocaleString() : '尚未运行';
+const fmt=value=>value ? new Date(value*1000).toLocaleString() : t('尚未运行');
 async function refresh(){
   try {
     tasks.value=await getAutomations(); emit('change');
@@ -32,7 +33,7 @@ async function openTask(id){
 }
 async function act(fn){if(busy.value)return;busy.value=true;error.value='';try{await fn();await refresh();}catch(e){error.value=e.message;}finally{busy.value=false;}}
 function startCreate(preset=null){
-  template.value=preset;form.value={title:preset?.title || '',instructions:preset?.instructions || ''};
+  template.value=preset;form.value={title:t(preset?.title || ''),instructions:t(preset?.instructions || '')};
   schedule.value={...scheduleForm({cron:'0 9 * * *'}),frequency:preset?.frequency || 'daily',time:preset?.time || '09:00'};
   repository.value='';channel.value='';delivery.value='app';consent.value=false;showForm.value=true;refresh();
 }
@@ -64,25 +65,25 @@ onMounted(()=>{poll();if(props.initialTask)openTask(props.initialTask);});
 onUnmounted(()=>{disposed=true;version++;clearTimeout(timer);});
 </script>
 <template><section class="page-view">
-<p v-if="error" class="error-text" role="alert">{{ error }}</p>
+<p v-if="error" class="error-text" role="alert">{{ t(error) }}</p>
 <template v-if="!detail">
-<div class="page-head"><div><h1>自动化</h1><p>创建定时任务，并查看每次运行的结果。</p></div><button class="btn primary" @click="startCreate()">＋ 新建自动化</button></div>
-<div class="automation-templates"><button v-for="preset in automationTemplates" :key="preset.id" class="btn" @click="startCreate(preset)">{{ preset.title }}</button></div>
+<div class="page-head"><div><h1>{{ t("自动化") }}</h1><p>{{ t("创建定时任务，并查看每次运行的结果。") }}</p></div><button class="btn primary" @click="startCreate()">{{ t("＋ 新建自动化") }}</button></div>
+<div class="automation-templates"><button v-for="preset in automationTemplates" :key="preset.id" class="btn" @click="startCreate(preset)">{{ t(preset.title) }}</button></div>
 <section v-if="showForm" class="card form-card"><fieldset :disabled="busy">
-<h2>{{ template ? template.title+'模板' : '新建自动化' }}</h2>
-<div v-for="name in missing" :key="name" class="dependency-card"><strong>需要连接 {{ name }}</strong><ConnectorAuth v-if="connectors.find(c=>c.name===name)" :connector="connectors.find(c=>c.name===name)" @change="refresh" /><button v-else type="button" class="btn" @click="emit('open-connectors',name)">打开连接器设置</button></div>
-<label>名称<input v-model="form.title" required placeholder="例如：每日项目摘要" /></label>
-<label>任务说明<textarea v-model="form.instructions" required rows="4" placeholder="描述每次运行时需要完成的任务"></textarea></label>
-<label v-if="template?.repository">GitHub 仓库<input v-model="repository" required placeholder="owner/repository" /></label>
-<label v-if="template?.id==='brief'">简报投递方式<select v-model="delivery"><option value="app">任务运行会话</option><option value="slack">Slack 频道</option></select></label><template v-if="deliveryTemplate?.delivery"><ChannelPicker v-model="channel" label="摘要投递频道" /><label class="consent-row"><input v-model="consent" type="checkbox" :disabled="!channel.trim()" />允许此任务每次使用 send_message 写入 {{ channel || '所选频道' }}</label><small>未授权时，发送前会进入审批流程；仅此任务与此目标适用。</small></template>
+<h2>{{ template ? template.title+t("模板") : t("新建自动化") }}</h2>
+<div v-for="name in missing" :key="name" class="dependency-card"><strong>{{ t("需要连接 ") }}{{ name }}</strong><ConnectorAuth v-if="connectors.find(c=>c.name===name)" :connector="connectors.find(c=>c.name===name)" @change="refresh" /><button v-else type="button" class="btn" @click="emit('open-connectors',name)">{{ t("打开连接器设置") }}</button></div>
+<label>{{ t("名称") }}<input v-model="form.title" required :placeholder="t(&quot;例如：每日项目摘要&quot;)" /></label>
+<label>{{ t("任务说明") }}<textarea v-model="form.instructions" required rows="4" :placeholder="t(&quot;描述每次运行时需要完成的任务&quot;)"></textarea></label>
+<label v-if="template?.repository">{{ t("GitHub 仓库") }}<input v-model="repository" required placeholder="owner/repository" /></label>
+<label v-if="template?.id==='brief'">{{ t("简报投递方式") }}<select v-model="delivery"><option value="app">{{ t("任务运行会话") }}</option><option value="slack">{{ t("Slack 频道") }}</option></select></label><template v-if="deliveryTemplate?.delivery"><ChannelPicker v-model="channel" :label="t(&quot;摘要投递频道&quot;)" /><label class="consent-row"><input v-model="consent" type="checkbox" :disabled="!channel.trim()" />{{ t("允许此任务每次使用 send_message 写入 ") }}{{ channel || t("所选频道") }}</label><small>{{ t("未授权时，发送前会进入审批流程；仅此任务与此目标适用。") }}</small></template>
 <ScheduleEditor v-model="schedule" />
-<div class="actions"><button type="button" class="btn primary" :disabled="busy||missing.length" @click="create">{{ busy ? '创建中…' : '创建' }}</button><button type="button" class="btn" @click="showForm=false">取消</button></div>
+<div class="actions"><button type="button" class="btn primary" :disabled="busy||missing.length" @click="create">{{ busy ? t("创建中…") : t("创建") }}</button><button type="button" class="btn" @click="showForm=false">{{ t("取消") }}</button></div>
 </fieldset></section>
-<div v-if="tasks.length" class="card-list"><button v-for="task in tasks" :key="task.id" class="card list-card" @click="openTask(task.id)"><div><strong>{{ task.title }} <span v-if="task.unseen_runs" class="badge">{{ task.unseen_failed ? '有未读失败' : '未读' }} {{ task.unseen_runs }}</span></strong><small>{{ task.enabled ? task.schedule : '已暂停' }} · {{ task.run_count }} 次运行</small></div><span :class="['status-pill',task.last_status]">{{ task.last_status || '未运行' }}</span></button></div><div v-else class="empty-card">还没有自动化任务。</div>
+<div v-if="tasks.length" class="card-list"><button v-for="task in tasks" :key="task.id" class="card list-card" @click="openTask(task.id)"><div><strong>{{ task.title }} <span v-if="task.unseen_runs" class="badge">{{ task.unseen_failed ? t("有未读失败") : t("未读") }} {{ task.unseen_runs }}</span></strong><small>{{ task.enabled ? task.schedule : t("已暂停") }} · {{ task.run_count }}{{ t(" 次运行") }}</small></div><span :class="['status-pill',task.last_status]">{{ task.last_status || t("未运行") }}</span></button></div><div v-else class="empty-card">{{ t("还没有自动化任务。") }}</div>
 </template>
-<template v-else><button class="back-link" @click="detail=null;version++">‹ 返回自动化列表</button>
-<div class="page-head"><div><h1>{{ detail.title }}</h1><p>{{ detail.schedule }} · 下次运行：{{ fmt(detail.next_run) }}</p></div><div class="actions"><button class="btn primary" :disabled="runBusy||busy" @click="runNow">{{ runBusy ? '准备中…' : '立即运行' }}</button><button class="btn danger" :disabled="busy" @click="remove(detail.id)">删除</button></div></div>
-<form class="card form-card" @submit.prevent="save"><fieldset :disabled="busy"><label class="toggle-row"><span><strong>启用任务</strong><small>关闭后不会再按计划运行</small></span><input type="checkbox" :checked="detail.enabled" @change="toggle" /></label><label>名称<input v-model="detail.title" required /></label><label>任务说明<textarea v-model="detail.instructions" required rows="6"></textarea></label><ScheduleEditor v-model="editSchedule" editing /><button class="btn primary">保存更改</button></fieldset></form>
-<section class="card form-card"><h2>持久授权</h2><p v-if="!detail.always_allowed?.length" class="muted">暂无。可在模板创建时授权指定投递目标，或在本任务的审批中选择每次允许。</p><div v-for="rule in detail.always_allowed || []" :key="rule.entry" class="access-row"><strong>{{ rule.tool }}</strong><code>{{ rule.target || rule.entry }}</code><button class="btn" :disabled="busy" @click="revoke(rule)">撤销授权</button></div></section>
-<h2 class="section-title">运行历史</h2><div v-if="runs.length" class="card-list"><button v-for="run in runs" :key="run.run_id" class="card list-card" :disabled="!run.session_id" @click="emit('open-session',{id:run.session_id,workspace:detail.workspace,agent:detail.agent,task_id:detail.id,task_title:detail.title})"><div><strong>{{ fmt(run.started_at) }}</strong><small>{{ run.result_text || run.error || run.trigger }}</small><small v-if="runNote(run)" class="error-text">{{ runNote(run) }}</small></div><span :class="['status-pill',run.status]">{{ run.status }}</span></button></div><div v-else class="empty-card">暂无运行记录。</div>
+<template v-else><button class="back-link" @click="detail=null;version++">{{ t("‹ 返回自动化列表") }}</button>
+<div class="page-head"><div><h1>{{ detail.title }}</h1><p>{{ detail.schedule }}{{ t(" · 下次运行：") }}{{ fmt(detail.next_run) }}</p></div><div class="actions"><button class="btn primary" :disabled="runBusy||busy" @click="runNow">{{ runBusy ? t("准备中…") : t("立即运行") }}</button><button class="btn danger" :disabled="busy" @click="remove(detail.id)">{{ t("删除") }}</button></div></div>
+<form class="card form-card" @submit.prevent="save"><fieldset :disabled="busy"><label class="toggle-row"><span><strong>{{ t("启用任务") }}</strong><small>{{ t("关闭后不会再按计划运行") }}</small></span><input type="checkbox" :checked="detail.enabled" @change="toggle" /></label><label>{{ t("名称") }}<input v-model="detail.title" required /></label><label>{{ t("任务说明") }}<textarea v-model="detail.instructions" required rows="6"></textarea></label><ScheduleEditor v-model="editSchedule" editing /><button class="btn primary">{{ t("保存更改") }}</button></fieldset></form>
+<section class="card form-card"><h2>{{ t("持久授权") }}</h2><p v-if="!detail.always_allowed?.length" class="muted">{{ t("暂无。可在模板创建时授权指定投递目标，或在本任务的审批中选择每次允许。") }}</p><div v-for="rule in detail.always_allowed || []" :key="rule.entry" class="access-row"><strong>{{ rule.tool }}</strong><code>{{ rule.target || rule.entry }}</code><button class="btn" :disabled="busy" @click="revoke(rule)">{{ t("撤销授权") }}</button></div></section>
+<h2 class="section-title">{{ t("运行历史") }}</h2><div v-if="runs.length" class="card-list"><button v-for="run in runs" :key="run.run_id" class="card list-card" :disabled="!run.session_id" @click="emit('open-session',{id:run.session_id,workspace:detail.workspace,agent:detail.agent,task_id:detail.id,task_title:detail.title})"><div><strong>{{ fmt(run.started_at) }}</strong><small>{{ run.result_text || run.error || run.trigger }}</small><small v-if="runNote(run)" class="error-text">{{ runNote(run) }}</small></div><span :class="['status-pill',run.status]">{{ run.status }}</span></button></div><div v-else class="empty-card">{{ t("暂无运行记录。") }}</div>
 </template></section></template>

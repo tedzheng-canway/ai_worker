@@ -1,4 +1,5 @@
 <script setup>
+import { t } from '../i18n';
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 const props = defineProps({ sessions: Array, personas: Array });
 const emit = defineEmits(['close', 'select']);
@@ -18,4 +19,4 @@ watch(query, () => active.value = 0);
 watch(active, () => nextTick(() => list.value?.querySelector('.active')?.scrollIntoView({ block: 'nearest' })));
 onMounted(() => input.value?.focus());
 </script>
-<template><div class="dialog-overlay" @click.self="emit('close')" @keydown="key"><section class="search-dialog" role="dialog" aria-modal="true" aria-label="搜索对话"><header><input ref="input" v-model="query" placeholder="搜索标题、智能体或项目" /><button class="btn" @click="emit('close')">关闭</button></header><div ref="list" class="search-results"><button v-for="(row,i) in rows" :key="row.session_id" class="search-result" :class="{active: active === i}" @mouseenter="active = i" @click="choose(row)"><strong>{{ row.pinned ? '★ ' : '' }}{{ row.title || row.session_id }}</strong><small>{{ row.agent }} · {{ row.workspace }} <kbd v-if="i < 9">Ctrl+{{ i+1 }}</kbd></small></button><p v-if="!rows.length">没有匹配的对话</p></div></section></div></template>
+<template><div class="dialog-overlay" @click.self="emit('close')" @keydown="key"><section class="search-dialog" role="dialog" aria-modal="true" :aria-label="t(&quot;搜索对话&quot;)"><header><input ref="input" v-model="query" :placeholder="t(&quot;搜索标题、智能体或项目&quot;)" /><button class="btn" @click="emit('close')">{{ t("关闭") }}</button></header><div ref="list" class="search-results"><button v-for="(row,i) in rows" :key="row.session_id" class="search-result" :class="{active: active === i}" @mouseenter="active = i" @click="choose(row)"><strong>{{ row.pinned ? '★ ' : '' }}{{ row.title || row.session_id }}</strong><small>{{ row.agent }} · {{ row.workspace }} <kbd v-if="i < 9">Ctrl+{{ i+1 }}</kbd></small></button><p v-if="!rows.length">{{ t("没有匹配的对话") }}</p></div></section></div></template>

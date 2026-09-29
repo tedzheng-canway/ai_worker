@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "node --test tests/*.test.js",
-    "test:browser": "node tests/p0.browser.cjs && node tests/p1.browser.cjs && node tests/p2.browser.cjs"
+    "test:browser": "node tests/p0.browser.cjs && node tests/p1.browser.cjs && node tests/p2.browser.cjs && node tests/p3.browser.cjs"
   },
   "dependencies": {
     "markdown-it": "^15.0.2",
