@@ -13,6 +13,22 @@ import QuestionPrompt from "./components/QuestionPrompt.vue";
 import FolderDialog from "./components/FolderDialog.vue";
 import SelectMenu from "./components/SelectMenu.vue";
 import ApprovalPrompt from "./components/ApprovalPrompt.vue";
+import MarkdownView from './components/MarkdownView.vue';
+import ArtifactPanel from './components/ArtifactPanel.vue';
+import SessionAccess from './components/SessionAccess.vue';
+import SessionSearch from './components/SessionSearch.vue';
+import { inspectPdf, sessionSkills, renameSession, setNavLayout, setWorkspaceTrusted } from './api';
+import { prepareAttachment } from './attachments';
+import { requireSuccess } from './settings';
+import { addUsage, usageTotals, normalizeTodos, transcriptGroups } from './sessionState';
+
+const attachments = ref([]), attachmentError = ref(''), attaching = ref(false), fileInput = ref(null);
+const skills = ref([]), chosenSkill = ref(''), skillIndex = ref(0), slashDismissed = ref(false);
+const panel = ref(''), artifactPath = ref(''), artifactVersion = ref(0), bindingVersion = ref(0);
+const searchOpen = ref(false), renameTarget = ref(null), renameDraft = ref(''), actionError = ref(''), actionBusy = ref(false);
+const expandedGroups = ref({}), streamReasoning = ref(''), compacting = ref(false), totals = ref({}), todos = ref([]), atBottom = ref(true);
+const trustRequest = ref(null), trustError = ref(''), trustSaving = ref(false), temporary = ref(false);
+const settingsTab = ref('general');
 
 const newId = () => crypto.randomUUID?.().slice(0, 12) || Math.random().toString(36).slice(2, 14);
 const sessions = ref([]);
@@ -25,7 +41,6 @@ const model = ref("gpt-5.6-sol");
 const models = ref([]);
 const config = ref(settingsWithDefaults({}));
 const usage = ref(null);
-const showAllSessions = ref(false);
 const showAllArchived = ref(false);
 const manualRunEntries = ref([]);
 const configError = ref("");
@@ -48,6 +63,7 @@ const scroller = ref(null);
 let socket = null;
 let refreshTimer = null;
 let pendingMessage = "";
+let attachmentLoads = 0;
 const connections = new Map();
 const reconnectTimers = new Map();
 let disposed = false;
@@ -56,8 +72,26 @@ manualRuns.changed();
 
 const activeSession = computed(() => sessions.value.find((item) => item.session_id === sessionId.value));
 const recentSessions = computed(() => sessions.value.filter((item) => !item.archived && !item.session_id.startsWith("__")));
+const sessionGroups = computed(() => {
+  const rows = recentSessions.value;
+  const groups = new Map();
+  const pinned = rows.filter(item => item.pinned);
+  if (pinned.length) groups.set('pinned', { key: 'pinned', label: '置顶', items: pinned });
+  for (const item of rows.filter(item => !item.pinned)) {
+    const persona = personas.value.find(p => p.id === item.agent);
+    const project = persona?.requires_folder ? item.workspace || '未选择项目' : '';
+    const key = config.value.nav_layout === 'grouped' ? `${item.agent}:${project}` : 'recent';
+    if (!groups.has(key)) groups.set(key, { key, label: key === 'recent' ? '最近对话' : `${persona?.name || item.agent}${project ? ` · ${project}` : ''}`, items: [] });
+    groups.get(key).items.push(item);
+  }
+  return [...groups.values()];
+});
+const groupedMessages = computed(() => transcriptGroups(messages.value));
+const slashSkills = computed(() => /^\/[^\s]*$/.test(draft.value) && !slashDismissed.value ? skills.value.filter(s => s.enabled && s.name.toLowerCase().includes(draft.value.slice(1).toLowerCase())) : []);
+const slashOpen = computed(() => /^\/[^\s]*$/.test(draft.value) && !slashDismissed.value);
+const canSend = computed(() => !!(draft.value.trim() || attachments.value.length || chosenSkill.value) && !attaching.value);
+const totalTokens = computed(() => Object.values(totals.value).reduce((sum, row) => sum + Object.values(row).reduce((n, v) => n + v, 0), 0));
 const archivedSessions = computed(() => sessions.value.filter((item) => item.archived && !item.session_id.startsWith("__")));
-const shownSessions = computed(() => showAllSessions.value ? recentSessions.value : recentSessions.value.slice(0, config.value.sessions_peek));
 const shownArchived = computed(() => showAllArchived.value ? archivedSessions.value : archivedSessions.value.slice(0, config.value.sessions_peek));
 const contextWindow = computed(() => Number(config.value.model_context_windows?.[usage.value?.model || model.value]) || 0);
 const contextPercent = computed(() => contextWindow.value ? Math.min(100, Math.round((usage.value?.tokens || 0) / contextWindow.value * 100)) : 0);
@@ -93,6 +127,7 @@ function updateTool(data) {
 
 function handleEvent(event) {
   const data = event.data || {};
+  if (event.type !== 'compacting') compacting.value = false;
   if (event.type === "ready") {
     connected.value = true;
     sessionReady.value = true;
@@ -103,21 +138,34 @@ function handleEvent(event) {
       if (mode.value === "auto-approve" && !config.value.auto_approve) changeMode("interactive");
     }
     if (data.workspace) workspace.value ||= data.workspace;
+    temporary.value = !!data.temp_workspace;
+    if (data.command_trust?.required) trustRequest.value = data.command_trust;
+    loadSkills();
     if (typeof data.running === "boolean") running.value = data.running;
   } else if (event.type === "turn_start") {
     running.value = true;
     streaming.value = "";
-    if (data.input && messages.value.at(-1)?.text !== data.input) messages.value.push({ kind: "user", text: data.display || data.input });
+    streamReasoning.value = '';
+    const lastUser = [...messages.value].reverse().find(item => item.kind === 'user');
+    if (data.input && lastUser?.sentInput !== data.input && lastUser?.text !== data.input && lastUser?.text !== data.display) messages.value.push({ kind: "user", text: data.display || data.input });
   } else if (event.type === "assistant_delta") {
     streaming.value += data.text || "";
+  } else if (event.type === 'reasoning_delta') {
+    streamReasoning.value += data.text || '';
+  } else if (event.type === 'compacting') {
+    compacting.value = true;
   } else if (event.type === "assistant_message") {
     if (data.usage) usage.value = contextUsage(data.usage);
-    if (data.text || data.reasoning) messages.value.push({ kind: "assistant", text: data.text || streaming.value, reasoning: data.reasoning || "" });
+    totals.value = addUsage(totals.value, data.usage);
+    if (data.text || data.reasoning || streaming.value || streamReasoning.value) messages.value.push({ kind: "assistant", text: data.text || streaming.value, reasoning: data.reasoning || streamReasoning.value });
     streaming.value = "";
+    streamReasoning.value = '';
   } else if (event.type === "tool_proposed") {
+    if (data.name === 'todo_write') todos.value = normalizeTodos(data.arguments?.todos || data.arguments?.items);
     messages.value.push({ kind: "tool", id: newId(), name: data.name, args: data.arguments || {}, status: "running" });
   } else if (event.type === "tool_finished") {
     updateTool(data);
+    artifactVersion.value++;
   } else if (event.type === "permission_required") {
     messages.value.push({
       kind: "approval",
@@ -127,6 +175,7 @@ function handleEvent(event) {
       category: data.category,
       standingTarget: data.standing_target,
       readonlyOk: !!data.readonly_ok,
+      ...approvalMeta(data),
     });
   } else if (event.type === "directory_requested") {
     messages.value.push({ kind: "dirreq", reason: data.reason || "", path: data.path || "", writable: !!data.writable, primary: !!data.primary });
@@ -135,7 +184,7 @@ function handleEvent(event) {
   } else if (event.type === "plan_proposed") {
     messages.value.push({ kind: "planreq", plan: data.plan || "" });
   } else if (event.type === "team_proposed") {
-    messages.value.push({ kind: "teamreq", members: data.members || [], note: data.note || "" });
+    messages.value.push({ kind: "teamreq", members: data.members || [], note: data.note || "", enable_chat: !!data.enable_chat });
   } else if (event.type === "items_proposed") {
     messages.value.push({ kind: "itemsreq", items: data.items || [], note: data.note || "" });
   } else if (event.type === "question_requested") {
@@ -149,21 +198,66 @@ function handleEvent(event) {
       multi: !!data.multi,
     });
   } else if (event.type === "turn_done") {
+    flushPartial();
     running.value = false;
+    artifactVersion.value++;
     refreshSessions();
+  } else if (event.type === 'turn_end') {
+    if (data.status === 'max_iterations_exceeded') addNotice('本轮已达到最大执行步数，可发送新消息继续。');
   } else if (event.type === "interrupted") {
-    if (streaming.value) messages.value.push({ kind: "assistant", text: streaming.value });
-    streaming.value = "";
+    flushPartial();
     running.value = false;
     addNotice("已停止生成");
-  } else if (event.type === "error" || event.type === "input_rejected") {
+  } else if (event.type === "error") {
+    flushPartial();
     running.value = false;
-    addNotice(data.error || "请求失败");
+    messages.value.push({ kind: 'notice', text: data.error || '请求失败', retriable: true });
+  } else if (event.type === 'input_rejected') {
+    running.value = !!socket?.running;
+    addNotice(data.error || '输入被拒绝');
   } else if (event.type === "mode_notice" || event.type === "model_changed" || event.type === "compacted") {
     if (event.type === "model_changed" && data.model) model.value = data.model;
     addNotice(data.text || "会话设置已更新");
   }
 }
+
+function flushPartial() {
+  if (streaming.value || streamReasoning.value) messages.value.push({ kind: 'assistant', text: streaming.value, reasoning: streamReasoning.value });
+  streaming.value = ''; streamReasoning.value = '';
+}
+async function loadSkills() {
+  const id = sessionId.value;
+  try { const rows = await sessionSkills(id, workspace.value); if (id === sessionId.value) { skills.value = rows; if (chosenSkill.value && !rows.some(s => s.name === chosenSkill.value && s.enabled)) chosenSkill.value = ''; } }
+  catch (error) { if (id === sessionId.value) attachmentError.value = `技能列表加载失败：${error.message}`; }
+}
+async function addFiles(files) {
+  const id = sessionId.value; attachmentLoads++; attaching.value = true; attachmentError.value = '';
+  const errors = [];
+  for (const file of Array.from(files)) {
+    try {
+      const attachment = await prepareAttachment(file, { max_pages: config.value.pdf_max_pages, max_mb: config.value.pdf_max_mb }, inspectPdf);
+      if (id === sessionId.value && !attachments.value.some(a => a.name === attachment.name && (a.text || a.data_url) === (attachment.text || attachment.data_url))) attachments.value.push(attachment);
+    } catch (error) { errors.push(error.message); }
+  }
+  if (id === sessionId.value) attachmentError.value = errors.join('；');
+  attachmentLoads--; attaching.value = attachmentLoads > 0;
+}
+function pasteFiles(event) { const files = [...(event.clipboardData?.items || [])].filter(item => item.kind === 'file' && item.type.startsWith('image/')).map(item => item.getAsFile()).filter(Boolean); if (files.length) { event.preventDefault(); addFiles(files); } }
+function dropFiles(event) { if (event.dataTransfer?.files.length) { event.preventDefault(); addFiles(event.dataTransfer.files); } }
+function chooseSkill(skill) { chosenSkill.value = skill.name; draft.value = ''; slashDismissed.value = true; }
+function openArtifact(event) { artifactPath.value = event.detail?.path || ''; panel.value = 'files'; artifactVersion.value++; }
+function openBoard() { surface.value = 'board'; panel.value = ''; }
+function scrollBottom() { atBottom.value = true; nextTick(() => { if (scroller.value) scroller.value.scrollTop = scroller.value.scrollHeight; }); }
+function trackScroll() { const el = scroller.value; if (el) atBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }
+function shortcut(event) { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); searchOpen.value = !searchOpen.value; } }
+async function sessionAction(fn) { actionBusy.value = true; actionError.value = ''; try { requireSuccess(await fn()); await refreshSessions(); closeRowMenu(); } catch (error) { actionError.value = error.message; } finally { actionBusy.value = false; } }
+function startRename(item) { renameTarget.value = item; renameDraft.value = item.title || ''; closeRowMenu(); }
+async function saveRename() { await sessionAction(() => renameSession(renameTarget.value.session_id, renameDraft.value.trim())); if (!actionError.value) renameTarget.value = null; }
+async function changeLayout(value) { await sessionAction(() => setNavLayout(value)); if (!actionError.value) { config.value.nav_layout = value; expandedGroups.value = {}; } }
+function allowAnyway(item) { if (running.value || !connected.value) return; socket.allowAnyway(item.name, item.args); item.overridden = true; transmit({ text: `请重试 ${item.name}，我已允许这一次完全相同的操作。`, attachments: [] }); }
+async function trustWorkspace() { trustSaving.value = true; trustError.value = ''; try { requireSuccess(await setWorkspaceTrusted(trustRequest.value.workspace, true)); trustRequest.value = null; } catch (error) { trustError.value = error.message; } finally { trustSaving.value = false; } }
+function savedProject(path) { if (!path) return; workspace.value = path; temporary.value = false; socket?.close(); connections.delete(sessionId.value); connect(); artifactVersion.value++; refreshSessions(); }
+function resetSessionUi() { attachments.value = []; draft.value = ''; chosenSkill.value = ''; skills.value = []; streamReasoning.value = ''; totals.value = {}; todos.value = []; trustRequest.value = null; temporary.value = false; attachmentError.value = ''; artifactPath.value = ''; compacting.value = false; atBottom.value = true; }
 
 function releaseInactiveConnections() {
   for (const [id, connection] of connections) {
@@ -182,11 +276,12 @@ function openConnection(id, folder, persona, openingText = "") {
     onEvent: (event) => {
       if (event.type === "ready") {
         connection.ready = true;
+        connection.readyData = event.data || {};
         connection.running = !!event.data?.running;
         void manualRuns.ready(id, connection.running).then(releaseInactiveConnections);
       }
       if (event.type === "turn_start") connection.running = true;
-      if (event.type === "turn_done") connection.running = false;
+      if (['turn_done', 'error', 'interrupted'].includes(event.type)) connection.running = false;
       void manualRuns.event(id, event).then(releaseInactiveConnections);
       if (id === sessionId.value) handleEvent(event);
     },
@@ -197,11 +292,12 @@ function openConnection(id, folder, persona, openingText = "") {
         status.value = folder ? "正在初始化工作区…" : "已连接";
       }
       if (openingText) {
+        const packet = typeof openingText === 'string' ? { text: openingText, attachments: [] } : openingText;
         if (id === sessionId.value) {
-          messages.value.push({ kind: "user", text: openingText, ts: Date.now() / 1000 });
+          messages.value.push({ kind: "user", text: packet.skill ? `/${packet.skill} ${packet.text}` : packet.text, sentInput: packet.text, attachments: packet.attachments, ts: Date.now() / 1000 });
           draft.value = "";
         }
-        connection.userMessage(openingText, openingModel);
+        connection.userMessage(packet.text, openingModel, packet.attachments, packet.skill);
         openingText = "";
       }
     },
@@ -239,6 +335,7 @@ function connect() {
   connected.value = !!socket.connected;
   sessionReady.value = !!socket.ready;
   running.value = !!socket.running;
+  if (socket.readyData) handleEvent({ type: 'ready', data: { ...socket.readyData, command_trust: undefined, running: socket.running } });
   if (connected.value) status.value = "已连接";
 }
 
@@ -257,7 +354,8 @@ function toggleRowMenu(id) {
 }
 
 async function archiveConversation(item) {
-  await setSessionFlags(item.session_id, { archived: !item.archived });
+  await sessionAction(() => setSessionFlags(item.session_id, { archived: !item.archived }));
+  if (actionError.value) return;
   rowMenu.value = "";
   await refreshSessions();
   if (!item.archived && item.session_id === sessionId.value) newSession(item.agent || agent.value);
@@ -268,8 +366,8 @@ async function removeConversation(item) {
     deleteArmed.value = item.session_id;
     return;
   }
-  const result = await deleteSession(item.session_id);
-  if (result.ok === false) return;
+  await sessionAction(() => deleteSession(item.session_id));
+  if (actionError.value) return;
   rowMenu.value = "";
   deleteArmed.value = "";
   await refreshSessions();
@@ -277,6 +375,7 @@ async function removeConversation(item) {
 }
 
 async function selectSession(item) {
+  resetSessionUi();
   pendingMessage = "";
   connected.value = false;
   socket = null;
@@ -295,12 +394,16 @@ async function selectSession(item) {
     if (sessionId.value !== item.session_id) return;
     messages.value = historyItems(rows);
     usage.value = historyUsage(rows);
+    totals.value = usageTotals(rows);
+    const todo = [...messages.value].reverse().find(item => item.kind === 'tool' && item.name === 'todo_write');
+    if (todo) todos.value = normalizeTodos(todo.args.todos || todo.args.items);
   } catch { if (sessionId.value === item.session_id) addNotice("无法加载历史消息"); }
   if (sessionId.value !== item.session_id) return;
   connect();
 }
 
 function newSession(persona = agent.value) {
+  resetSessionUi();
   surface.value = "session";
   sessionId.value = newId();
   agent.value = visiblePersonas.value.some((p) => p.id === persona) ? persona : visiblePersonas.value[0]?.id || "cowork";
@@ -322,6 +425,7 @@ function changePersona(value) {
 }
 
 async function openRun(prepared) {
+  resetSessionUi();
   manualRuns.track(prepared);
   surface.value = "session";
   sessionId.value = prepared.session_id;
@@ -346,8 +450,8 @@ async function reloadConfig() {
     config.value = settingsWithDefaults(nextSettings);
     models.value = nextSettings.models || [];
     personas.value = nextPersonas;
-    showAllSessions.value = false;
     showAllArchived.value = false;
+    expandedGroups.value = {};
     if (mode.value === "auto-approve" && !config.value.auto_approve) changeMode("interactive");
     if (!messages.value.length && !running.value) {
       changeModel(nextSettings.model || nextSettings.default_model || models.value[0] || model.value);
@@ -362,18 +466,30 @@ function setTheme(value) {
 }
 
 function send() {
-  const text = draft.value.trim();
-  if (!text || running.value) return;
+  let text = draft.value.trim();
+  if (!canSend.value || running.value) return;
+  if (slashOpen.value && slashSkills.value.length) { chooseSkill(slashSkills.value[Math.max(0, skillIndex.value)]); return; }
+  let skill = chosenSkill.value || undefined;
+  const explicit = text.match(/^\/(\S+)\s+([\s\S]*)$/);
+  if (!skill && explicit && skills.value.some(row => row.name === explicit[1] && row.enabled)) { skill = explicit[1]; text = explicit[2].trim(); }
+  const packet = { text, attachments: [...attachments.value], skill };
   if (needsWorkspace.value) {
-    sendGate.value = text;
+    sendGate.value = packet;
     folderError.value = "";
     draft.value = "";
+    attachments.value = []; chosenSkill.value = '';
     return;
   }
   if (!connected.value || !socket) return;
-  messages.value.push({ kind: "user", text, ts: Date.now() / 1000 });
+  transmit(packet);
   draft.value = "";
-  socket.userMessage(text, model.value);
+  attachments.value = []; chosenSkill.value = '';
+}
+function transmit(packet) {
+  messages.value.push({ kind: 'user', text: packet.skill ? `/${packet.skill} ${packet.text}` : packet.text, sentInput: packet.text, attachments: packet.attachments, ts: Date.now() / 1000 });
+  running.value = true;
+  socket.userMessage(packet.text, model.value, packet.attachments, packet.skill);
+  scrollBottom();
 }
 
 function resolveSendFolder(path) {
@@ -400,12 +516,23 @@ async function startTempAndSend() {
 }
 
 function cancelSendFolder() {
-  draft.value = sendGate.value;
+  draft.value = sendGate.value.text || '';
+  attachments.value = sendGate.value.attachments || [];
+  chosenSkill.value = sendGate.value.skill || '';
   sendGate.value = "";
   folderError.value = "";
 }
 
 function keydown(event) {
+  if (event.isComposing || event.keyCode === 229) return;
+  if (slashOpen.value && ['ArrowUp','ArrowDown','Enter','Escape'].includes(event.key)) {
+    event.preventDefault();
+    if (event.key === 'Escape') slashDismissed.value = true;
+    else if (event.key === 'Enter' && slashSkills.value[skillIndex.value]) chooseSkill(slashSkills.value[skillIndex.value]);
+    else if (event.key === 'ArrowDown') skillIndex.value = Math.min(slashSkills.value.length - 1, skillIndex.value + 1);
+    else if (event.key === 'ArrowUp') skillIndex.value = Math.max(0, skillIndex.value - 1);
+    return;
+  }
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
     send();
@@ -422,11 +549,11 @@ function resolveRequest(result) {
   const item = pending.value;
   if (!item || item.kind === "question") return;
   if (item.kind === "approval") socket?.approve(result.decision);
-  else if (item.kind === "dirreq") socket?.respondDirectory(result.approved, item.path, result.writable);
+  else if (item.kind === "dirreq") socket?.respondDirectory(result.approved, result.path || item.path, result.writable);
   else if (item.kind === "toolreq") socket?.respondTool(result.approved);
-  else if (item.kind === "planreq") socket?.respondPlan(result.approved);
-  else if (item.kind === "teamreq") socket?.respondTeam(result.approved);
-  else if (item.kind === "itemsreq") socket?.respondItems(result.approved);
+  else if (item.kind === "planreq") { socket?.respondPlan(result.approved, result.mode, result.feedback); if (result.approved && result.mode) mode.value = result.mode; }
+  else if (item.kind === "teamreq") socket?.respondTeam(result.approved, result.feedback, result.enableChat);
+  else if (item.kind === "itemsreq") socket?.respondItems(result.approved, result.feedback);
   item.resolved = result.decision || (result.approved ? "approved" : "denied");
 }
 
@@ -450,13 +577,19 @@ function compactAge(value) {
   return `${Math.floor(minutes / 1440)} 天`;
 }
 
-watch([messages, streaming], () => nextTick(() => {
-  if (scroller.value) scroller.value.scrollTop = scroller.value.scrollHeight;
+watch([messages, streaming, streamReasoning], () => nextTick(() => {
+  if (scroller.value && atBottom.value) scroller.value.scrollTop = scroller.value.scrollHeight;
 }), { deep: true });
+watch(draft, () => { slashDismissed.value = false; skillIndex.value = 0; });
+watch(surface, (value) => { if (value === 'session') loadSkills(); });
+watch([sessionId, workspace], loadSkills);
 watch(dark, (value) => document.documentElement.dataset.theme = value ? "dark" : "light", { immediate: true });
 
 onMounted(async () => {
   window.addEventListener("click", closeRowMenu);
+  window.addEventListener('keydown', shortcut);
+  window.addEventListener('ocw-open-artifact', openArtifact);
+  window.addEventListener('ocw-open-board', openBoard);
   try {
     const [health, settings, personaRows, sessionRows] = await Promise.all([getHealth(), getSettings(), getPersonas(), getSessions()]);
     config.value = settingsWithDefaults(settings);
@@ -478,6 +611,9 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   disposed = true;
   window.removeEventListener("click", closeRowMenu);
+  window.removeEventListener('keydown', shortcut);
+  window.removeEventListener('ocw-open-artifact', openArtifact);
+  window.removeEventListener('ocw-open-board', openBoard);
   for (const connection of connections.values()) connection.close();
   for (const timer of reconnectTimers.values()) clearTimeout(timer);
   if (refreshTimer) window.clearInterval(refreshTimer);
@@ -493,9 +629,12 @@ onBeforeUnmount(() => {
         <button class="icon-button pin" title="收起侧边栏" @click="sidebarOpen = false">‹</button>
       </header>
       <button class="new-button" @click="newSession()"><span>＋</span> 新对话</button>
-      <div class="section-label">最近对话</div>
+      <button class="search-button" @click="searchOpen = true">⌕ 搜索对话 <small>Ctrl+K</small></button>
+      <label class="section-label">导航布局 <select :value="config.nav_layout || 'flat'" :disabled="actionBusy" @change="changeLayout($event.target.value)"><option value="flat">按时间</option><option value="grouped">按智能体 / 项目</option></select></label>
       <nav class="session-list">
-        <div v-for="item in shownSessions" :key="item.session_id" class="session-row-wrap">
+        <section v-for="group in sessionGroups" :key="group.key" class="session-group">
+        <div class="section-label group-title" :title="group.label">{{ group.label }}</div>
+        <div v-for="item in (expandedGroups[group.key] ? group.items : group.items.slice(0,config.sessions_peek))" :key="item.session_id" class="session-row-wrap">
           <button class="session-row" :class="{ active: surface === 'session' && item.session_id === sessionId }" @click="selectSession(item)">
             <span class="session-icon">◇</span>
             <span class="session-copy"><strong>{{ item.title || '未命名对话' }}</strong><small>{{ item.agent }} · {{ compactAge(item.updated_at) }}</small></span>
@@ -503,12 +642,15 @@ onBeforeUnmount(() => {
           </button>
           <button class="row-menu-button" title="对话操作" @click.stop="toggleRowMenu(item.session_id)">⋯</button>
           <div v-if="rowMenu === item.session_id" class="row-menu" role="menu" @click.stop>
+            <button @click="startRename(item)">重命名</button>
+            <button :disabled="actionBusy" @click="sessionAction(() => setSessionFlags(item.session_id, { pinned: !item.pinned }))">{{ item.pinned ? '取消置顶' : '置顶' }}</button>
             <button @click="archiveConversation(item)">▣ 归档</button>
             <div class="menu-separator"></div>
             <button class="danger-item" @click="removeConversation(item)">{{ deleteArmed === item.session_id ? '再次点击确认删除' : '⌫ 删除' }}</button>
           </div>
         </div>
-        <button v-if="recentSessions.length > config.sessions_peek" class="archived-toggle" @click="showAllSessions = !showAllSessions">{{ showAllSessions ? '收起对话' : `显示更多（${recentSessions.length - shownSessions.length}）` }}</button>
+        <button v-if="group.items.length > config.sessions_peek" class="archived-toggle" @click="expandedGroups[group.key] = !expandedGroups[group.key]">{{ expandedGroups[group.key] ? '收起对话' : `显示更多（${group.items.length - config.sessions_peek}）` }}</button>
+        </section>
         <div v-if="!recentSessions.length && !archivedSessions.length" class="empty-side">还没有历史对话</div>
         <div v-if="archivedSessions.length" class="archived-section">
           <button class="archived-toggle" @click="showArchived = !showArchived"><span>{{ showArchived ? '⌄' : '›' }}</span>已归档（{{ archivedSessions.length }}）</button>
@@ -517,6 +659,7 @@ onBeforeUnmount(() => {
               <button class="session-row archived-row" @click="selectSession(item)"><span class="session-icon">◇</span><span class="session-copy"><strong>{{ item.title || '未命名对话' }}</strong><small>{{ item.agent }} · {{ compactAge(item.updated_at) }}</small></span></button>
               <button class="row-menu-button" title="对话操作" @click.stop="toggleRowMenu(item.session_id)">⋯</button>
               <div v-if="rowMenu === item.session_id" class="row-menu" role="menu" @click.stop>
+                <button @click="startRename(item)">重命名</button>
                 <button @click="archiveConversation(item)">↶ 取消归档</button>
                 <div class="menu-separator"></div>
                 <button class="danger-item" @click="removeConversation(item)">{{ deleteArmed === item.session_id ? '再次点击确认删除' : '⌫ 删除' }}</button>
@@ -544,16 +687,18 @@ onBeforeUnmount(() => {
         <button v-if="!sidebarOpen" class="icon-button" title="展开侧边栏" @click="sidebarOpen = true">☰</button>
         <div class="title-block"><strong>{{ pageTitle }}</strong><small v-if="surface === 'session'">{{ activePersona?.name || agent }} · {{ model }}<template v-if="workspace"> · {{ workspace }}</template></small><small v-else>AIWorker</small></div>
         <button v-if="surface === 'session'" class="icon-button" title="新对话" @click="newSession()">＋</button>
+        <template v-if="surface === 'session'"><button class="btn" @click="artifactPath = ''; panel = panel === 'files' ? '' : 'files'">文件</button><button class="btn" @click="loadSkills(); panel = panel === 'access' ? '' : 'access'">权限与项目</button></template>
       </header>
 
       <p v-if="configError" class="error-text status-note" role="alert">{{ configError }} <button class="btn" @click="reloadConfig">重试同步</button></p>
+      <p v-if="actionError" class="error-text status-note" role="alert">{{ actionError }}</p>
       <div v-for="entry in runNotes" :key="entry.run_id" class="status-note" role="status">
         {{ entry.note }}
         <button class="btn" @click="selectSession(entry)">查看运行会话</button>
         <button v-if="entry.state === 'completed'" class="btn" @click="manualRuns.finish(entry.session_id)">重试回写</button>
       </div>
       <template v-if="surface === 'session'">
-      <div ref="scroller" class="conversation">
+      <div ref="scroller" class="conversation" @scroll="trackScroll" @dragover.prevent @drop="dropFiles">
         <section v-if="!messages.length && !streaming" class="hero">
           <div class="hero-mark">◇</div>
           <h1>今天想完成什么？</h1>
@@ -566,32 +711,34 @@ onBeforeUnmount(() => {
         </section>
 
         <div v-else class="transcript">
-          <article v-for="(item, index) in messages" :key="index" :class="['message', item.kind]">
+          <article v-for="(item, index) in groupedMessages" :key="index" :class="['message', item.kind]">
             <template v-if="item.kind === 'user'">
               <div class="user-bubble">{{ item.text }}</div><small>{{ formatTime(item.ts) }}</small>
+              <div v-if="item.attachments?.length" class="attachments"><div v-for="(file,i) in item.attachments" :key="i" class="attachment"><img v-if="file.kind === 'image'" :src="file.data_url" :alt="file.name" /><span>{{ file.name }}</span></div></div>
             </template>
             <template v-else-if="item.kind === 'assistant'">
               <details v-if="item.reasoning" class="reasoning"><summary>思考过程</summary><pre>{{ item.reasoning }}</pre></details>
-              <div class="assistant-copy">{{ item.text }}</div><small>{{ formatTime(item.ts) }}</small>
+              <MarkdownView class="assistant-copy" :text="item.text" /><small>{{ formatTime(item.ts) }}</small>
             </template>
-            <template v-else-if="item.kind === 'tool'">
-              <details class="tool-card"><summary><span :class="['tool-status', item.status]"></span>{{ item.name }} <small>{{ item.status === 'running' ? '运行中' : item.status === 'denied' ? '已拒绝' : item.status === 'unknown' ? '结果未知' : item.status }}</small><small v-if="item.approvalOrigin"> · {{ approvalLabels[item.approvalOrigin] || item.approvalOrigin }}</small></summary><p v-if="item.approvalNote">{{ item.approvalNote }}</p><p v-if="item.approvalGrant">授权：{{ item.approvalGrant }}</p><pre>{{ JSON.stringify(item.args, null, 2) }}<template v-if="item.preview">\n\n{{ item.preview }}</template></pre></details>
-            </template>
-            <template v-else-if="item.kind === 'notice'"><div class="notice-line">{{ item.text }}</div></template>
+            <template v-else-if="item.kind === 'steps'"><details class="tool-group" open><summary>工具步骤（{{ item.items.length }}）</summary><details v-for="(step,i) in item.items" :key="step.id || i" class="tool-card"><summary><span :class="['tool-status', step.status]"></span>{{ step.name }} <small>{{ step.status === 'running' ? '运行中' : step.status === 'denied' ? '已拒绝' : step.status === 'unknown' ? '结果未知' : step.status }}</small><small v-if="step.approvalOrigin"> · {{ approvalLabels[step.approvalOrigin] || step.approvalOrigin }}</small></summary><p v-if="step.approvalNote">{{ step.approvalNote }}</p><p v-if="step.approvalGrant">授权：{{ step.approvalGrant }}</p><pre>{{ JSON.stringify(step.args, null, 2) }}{{ '\n\n' + (step.preview || '') }}</pre><button v-if="step.approvalOrigin === 'reviewer_denied' && !step.overridden" class="btn" :disabled="running || !connected" @click="allowAnyway(step)">仍然允许一次</button></details></details></template>
+            <template v-else-if="item.kind === 'notice'"><div class="notice-line">{{ item.text }} <button v-if="item.retriable" class="btn" :disabled="running || !connected" @click="socket.retry(); running = true">重试</button></div></template>
             <template v-else-if="item.kind === 'approval'"><div class="inline-card"><strong>允许执行 {{ item.name }}？</strong><p>{{ item.reason || '此操作需要你的确认。' }}</p></div></template>
             <template v-else-if="item.kind === 'question'"><div class="inline-card"><strong>{{ item.text }}</strong></div></template>
           </article>
-          <article v-if="streaming" class="message assistant"><div class="assistant-copy">{{ streaming }}<span class="cursor"></span></div></article>
-          <div v-if="running && !streaming" class="thinking-row"><span></span>正在处理任务…</div>
+          <article v-if="streaming || streamReasoning" class="message assistant"><details v-if="streamReasoning" class="reasoning" open><summary>思考过程</summary><pre>{{ streamReasoning }}</pre></details><MarkdownView class="assistant-copy" :text="streaming" /><span v-if="streaming" class="cursor"></span></article>
+          <div v-if="running && (compacting || !streaming)" class="thinking-row"><span></span>{{ compacting ? '正在压缩上下文…' : '正在处理任务…' }}</div>
         </div>
       </div>
+      <button v-if="!atBottom" class="btn return-bottom" @click="scrollBottom">↓ 回到底部</button>
+      <details v-if="todos.length" class="todo-progress"><summary>任务进度 {{ todos.filter(t => t.status === 'completed').length }} / {{ todos.length }}</summary><div v-for="(todo,i) in todos" :key="i"><span>{{ todo.status === 'completed' ? '✓' : todo.status === 'in_progress' ? '◉' : '○' }}</span> {{ todo.content }}</div></details>
 
       <section v-if="pending" :class="pending.kind === 'question' ? 'question-bar' : 'request-bar'">
         <QuestionPrompt v-if="pending.kind === 'question'" :key="`question-${sessionId}-${messages.indexOf(pending)}`" :item="pending" @answer="respond" />
-        <ApprovalPrompt v-else :key="`request-${sessionId}-${messages.indexOf(pending)}`" :item="pending" @resolve="resolveRequest" />
+        <ApprovalPrompt v-else :key="`request-${sessionId}-${messages.indexOf(pending)}`" :item="pending" :auto-approve="mode === 'auto-approve'" :run-task="manualRunEntries.some(entry => entry.session_id === sessionId)" @resolve="resolveRequest" />
       </section>
 
       <footer class="composer-area">
+        <details v-if="totalTokens" class="usage-totals"><summary>累计用量 {{ totalTokens.toLocaleString() }} tokens</summary><div v-for="(row,name) in totals" :key="name">{{ name }}：输入 {{ row.input }} · 输出 {{ row.output }} · 缓存读取 {{ row.cache_read }} · 缓存写入 {{ row.cache_write }}</div></details>
         <div v-if="config.context_bar" class="context-usage" role="status">
           <template v-if="usage && contextWindow">
             <span>上下文 {{ contextPercent }}% · {{ usage.tokens.toLocaleString() }} / {{ contextWindow.toLocaleString() }} tokens</span>
@@ -599,26 +746,36 @@ onBeforeUnmount(() => {
           </template>
           <span v-else>{{ usage ? `上下文 ${usage.tokens.toLocaleString()} tokens（模型容量未知）` : '上下文用量：等待模型返回数据' }}</span>
         </div>
-        <div class="composer">
-          <textarea v-model="draft" :disabled="!connected && !needsWorkspace" rows="1" :placeholder="needsWorkspace ? '描述任务，发送时选择工作目录' : connected ? '描述任务，Enter 发送，Shift + Enter 换行' : '等待本地服务连接…'" @keydown="keydown"></textarea>
+        <p v-if="attachmentError" class="error-text" role="alert">{{ attachmentError }}</p>
+        <div class="composer" @dragover.prevent @drop="dropFiles">
+          <div v-if="attachments.length" class="attachments"><div v-for="(file,i) in attachments" :key="i" class="attachment"><img v-if="file.kind === 'image'" :src="file.data_url" :alt="file.name" /><details v-else-if="file.kind === 'text'"><summary>{{ file.name }}</summary><pre>{{ file.text.slice(0,4000) }}</pre></details><span v-else>{{ file.name }}</span><button type="button" :aria-label="`移除附件 ${file.name}`" @click="attachments.splice(i,1)">×</button></div></div>
+          <div v-if="chosenSkill" class="skill-chip">/{{ chosenSkill }}<button aria-label="取消技能" @click="chosenSkill = ''">×</button></div>
+          <div v-if="slashOpen" class="slash-menu" role="listbox" aria-label="选择技能"><button v-for="(skill,i) in slashSkills" :key="skill.name" :class="{active: i === skillIndex}" role="option" :aria-selected="i === skillIndex" @mousedown.prevent @click="chooseSkill(skill)">/{{ skill.name }} <small>{{ skill.description }}</small></button><p v-if="!slashSkills.length">没有匹配的已启用技能，按 Esc 可发送普通文字。</p></div>
+          <textarea v-model="draft" :disabled="!connected && !needsWorkspace" rows="1" :placeholder="needsWorkspace ? '描述任务，发送时选择工作目录' : connected ? '描述任务，Enter 发送，Shift + Enter 换行' : '等待本地服务连接…'" @keydown="keydown" @paste="pasteFiles"></textarea>
           <div class="composer-toolbar">
             <div class="selectors">
+              <button class="btn" :disabled="attaching" title="添加附件" @click="fileInput.click()">{{ attaching ? '读取中…' : '＋ 附件' }}</button><input ref="fileInput" type="file" multiple hidden @change="addFiles($event.target.files); $event.target.value = ''" />
               <SelectMenu :model-value="agent" :options="personaOptions" icon="◇" label="选择智能体" @change="changePersona" />
               <SelectMenu :model-value="mode" :options="modeOptions" icon="◉" label="选择权限模式" @change="changeMode" />
               <SelectMenu v-if="modelOptions.length" class="model-selector" :model-value="model" :options="modelOptions" icon="✦" label="选择模型" wide @change="changeModel" />
             </div>
             <button v-if="running" class="stop-button" title="停止" @click="socket.interrupt()">■</button>
-            <button v-else class="send-button" :disabled="!draft.trim() || (!connected && !needsWorkspace)" title="发送" @click="send">↑</button>
+            <button v-else class="send-button" :disabled="!canSend || (!connected && !needsWorkspace)" title="发送" aria-label="发送" @click="send">↑</button>
           </div>
         </div>
       </footer>
       </template>
       <AutomationsView v-else-if="surface === 'automations'" :manual-runs="manualRunEntries" @run="openRun" @open-session="openRunSession" />
       <ConnectorsView v-else-if="surface === 'connectors'" />
-      <BoardView v-else-if="surface === 'board'" :session-id="sessionId" />
+      <BoardView v-else-if="surface === 'board'" :key="`${sessionId}-${bindingVersion}`" :session-id="sessionId" />
       <AuditView v-else-if="surface === 'audit'" />
-      <SettingsView v-else :dark="dark" @theme-change="setTheme" @settings-change="reloadConfig" />
+      <SettingsView v-else :dark="dark" :initial-tab="settingsTab" @theme-change="setTheme" @settings-change="reloadConfig" />
     </main>
+    <ArtifactPanel v-if="surface === 'session' && panel === 'files'" :session-id="sessionId" :workspace="workspace" :refresh-key="artifactVersion" :initial-path="artifactPath" @close="panel = ''" />
+    <SessionAccess v-if="surface === 'session' && panel === 'access'" :key="sessionId" :session-id="sessionId" :workspace="workspace" :skills="skills" :running="running" :temporary="temporary" @close="panel = ''" @saved="savedProject" @skills-change="loadSkills" @binding-change="bindingVersion++" @open-board="openBoard" @open-memory="settingsTab = 'memory'; surface = 'settings'; panel = ''" />
+    <SessionSearch v-if="searchOpen" :sessions="sessions" :personas="personas" @close="searchOpen = false" @select="selectSession" />
+    <div v-if="renameTarget" class="dialog-overlay" @click.self="renameTarget = null"><form class="search-dialog form-card" role="dialog" aria-label="重命名对话" @submit.prevent="saveRename"><h3>重命名对话</h3><input v-model="renameDraft" aria-label="对话标题" required autofocus /><p v-if="actionError" class="error-text">{{ actionError }}</p><div class="actions"><button class="btn primary" :disabled="actionBusy || !renameDraft.trim()">保存名称</button><button type="button" class="btn" @click="renameTarget = null">取消</button></div></form></div>
+    <div v-if="trustRequest" class="dialog-overlay"><section class="search-dialog form-card" role="dialog" aria-label="工作区命令信任"><h3>信任工作区声明的命令？</h3><p>{{ trustRequest.workspace }}</p><pre>{{ (trustRequest.requested_commands || []).join('\n') }}</pre><p>信任后这些声明的命令可按工作区规则执行。你可以在“权限与项目”中撤销。</p><p v-if="trustError" class="error-text">{{ trustError }}</p><div class="actions"><button class="btn" :disabled="trustSaving" @click="trustRequest = null">继续逐次询问</button><button class="btn primary" :disabled="trustSaving" @click="trustWorkspace">信任此工作区</button></div></section></div>
     <FolderDialog v-if="sendGate" :persona-name="activePersona?.name || agent" :external-error="folderError" @pick="resolveSendFolder" @temp="startTempAndSend" @cancel="cancelSendFolder" />
   </div>
 </template>

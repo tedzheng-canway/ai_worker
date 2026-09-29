@@ -32,6 +32,27 @@ export const openWorkspace = (path) => request("/v1/workspaces/open", json("POST
 export const createTempWorkspace = (id) => request("/v1/workspaces/temp", json("POST", { session_id: id, git: true }));
 export const setSessionFlags = (id, flags) => request(`/v1/sessions/${encodeURIComponent(id)}`, json("PATCH", flags));
 export const deleteSession = (id) => request(`/v1/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
+export const renameSession = (id, title) => setSessionFlags(id, { title });
+export const setNavLayout = (nav_layout) => request('/v1/settings/nav-layout', json('POST', { nav_layout }));
+const sessionPath = (id) => `/v1/sessions/${encodeURIComponent(id)}`;
+export const inspectPdf = (data_url) => request('/v1/attachments/inspect-pdf', json('POST', { data_url }));
+export const getArtifacts = async (id) => (await request(`${sessionPath(id)}/artifacts`)).artifacts || [];
+export const readArtifact = (id, path) => request(`${sessionPath(id)}/artifacts/read?${new URLSearchParams({ path })}`);
+export const revealArtifact = (id, path, mode = 'reveal') => request(`${sessionPath(id)}/artifacts/reveal`, json('POST', { path, mode }));
+export const getRoots = async (id) => (await request(`${sessionPath(id)}/roots`)).roots || [];
+export const addRoot = (id, path, writable) => request(`${sessionPath(id)}/roots`, json('POST', { path, writable }));
+export const removeRoot = (id, path) => request(`${sessionPath(id)}/roots?${new URLSearchParams({ path })}`, { method: 'DELETE' });
+export const saveSessionAsProject = (id, path) => request(`${sessionPath(id)}/save-as-project`, json('POST', { path }));
+export const getTrustedWorkspaces = async () => (await request('/v1/workspaces/trusted')).workspaces || [];
+export const setWorkspaceTrusted = (path, trusted) => request('/v1/workspaces/trust', json('POST', { path, trusted }));
+export const getProjectMenu = (id, kind) => request(`${sessionPath(id)}/project-menu?${new URLSearchParams({ kind })}`);
+export const setProjectBinding = (id, kind, name) => request(`${sessionPath(id)}/bindings`, json('PUT', { kind, name }));
+export const nameCurrentProject = (id, kind, name) => request(`${sessionPath(id)}/project-name`, json('POST', { kind, name }));
+export const sessionSkills = async (id, workspace) => (await request(`${sessionPath(id)}/skills${workspace ? `?${new URLSearchParams({ workspace })}` : ''}`)).skills || [];
+export const setSessionSkill = (id, skill, enabled, workspace) => request(`${sessionPath(id)}/skills`, json('POST', { skill, enabled, ...(workspace ? { workspace } : {}) }));
+export const revealSkill = (name) => request(`/v1/skills/${encodeURIComponent(name)}/reveal`, json('POST', {}));
+export const stageSkillUpload = (data_b64, filename) => request('/v1/skills/upload', json('POST', { data_b64, filename }));
+export const confirmSkillUpload = (token) => request('/v1/skills/upload/confirm', json('POST', { token, scope: 'global' }));
 
 const json = (method, body) => ({ method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 export const getBoard = (id) => request(`/v1/sessions/${encodeURIComponent(id)}/board`);
@@ -109,14 +130,15 @@ export class Session {
     else if (this.ws.readyState === WebSocket.CONNECTING) this.queue.push(payload);
   }
 
-  userMessage(text, model) { this.send({ type: "user_message", text, ...(model ? { model } : {}) }); }
+  userMessage(text, model, attachments = [], skill) { this.send({ type: "user_message", text, ...(model ? { model } : {}), ...(attachments.length ? { attachments } : {}), ...(skill ? { skill } : {}) }); }
+  allowAnyway(name, args) { this.send({ type: 'allow_anyway', name, arguments: args || {} }); }
   interrupt() { this.send({ type: "interrupt" }); }
   approve(decision) { this.send({ type: "approval", decision }); }
   respondDirectory(granted, path, writable = false) { this.send({ type: "directory_response", granted, ...(path ? { path } : {}), writable }); }
   respondTool(approved) { this.send({ type: "tool_response", approved }); }
-  respondPlan(approved) { this.send({ type: "plan_response", approved }); }
-  respondTeam(approved) { this.send({ type: "team_response", approved }); }
-  respondItems(approved) { this.send({ type: "items_response", approved }); }
+  respondPlan(approved, mode, feedback) { this.send({ type: "plan_response", approved, ...(mode ? { mode } : {}), ...(feedback ? { feedback } : {}) }); }
+  respondTeam(approved, feedback, enableChat) { this.send({ type: "team_response", approved, ...(feedback ? { feedback } : {}), ...(enableChat !== undefined ? { enable_chat: enableChat } : {}) }); }
+  respondItems(approved, feedback) { this.send({ type: "items_response", approved, ...(feedback ? { feedback } : {}) }); }
   answer(answer) { this.send({ type: "question_response", answer }); }
   setMode(mode) { this.send({ type: "set_mode", mode }); }
   setModel(model) { this.send({ type: "set_model", model }); }

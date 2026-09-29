@@ -1,3 +1,4 @@
+import { historyAttachments } from './attachments.js';
 export function contentText(content) {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return content ? JSON.stringify(content, null, 2) : "";
@@ -16,7 +17,7 @@ export function historyItems(rows) {
   const tools = new Map(rows.filter((row) => row.role === "tool" && row.tool_call_id).map((row) => [row.tool_call_id, row]));
   const result = [];
   for (const row of rows) {
-    if (row.role === "user") result.push({ kind: "user", text: typeof row._display === "string" ? row._display : contentText(row.content), ts: row.ts });
+    if (row.role === "user") result.push({ kind: "user", text: typeof row._display === "string" ? row._display : contentText(row.content), attachments: historyAttachments(row.content), ts: row.ts });
     if (row.role === "assistant") {
       if (row.content || row.reasoning) result.push({ kind: "assistant", text: contentText(row.content), reasoning: row.reasoning, ts: row.ts });
       for (const call of row.tool_calls || []) {
@@ -31,7 +32,7 @@ export function historyItems(rows) {
     }
     if (row.role === "notice") result.push({ kind: "notice", text: row.text || row.content || "系统提示" });
   }
-  return result.filter((item) => item.text || item.kind === "tool" || item.reasoning);
+  return result.filter((item) => item.text || item.kind === "tool" || item.reasoning || item.attachments?.length);
 }
 
 export const approvalLabels = { user: "用户审批", reviewer: "自动审查", reviewer_denied: "自动审查拒绝", user_denied: "用户拒绝", bypass: "绕过审批" };

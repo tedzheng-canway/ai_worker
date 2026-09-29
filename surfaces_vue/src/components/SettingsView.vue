@@ -1,17 +1,16 @@
 <script setup>
 import { onMounted, onBeforeUnmount, ref } from "vue";
+import SkillsManager from './SkillsManager.vue';
 import { compactionPayload, pdfPayload, requireSuccess, sessionLimit, settingsWithDefaults } from "../settings";
-import { addModel, createSkill, deleteAllMemory, deleteMemory, deleteSkill, getMemory, getMemorySettings, getPersonas, getProviders, getSettings, listSkills, removeModel, removeProvider, setAutoApprove, setCompactionSettings, setContextBar, setDefaultModel, setMemorySettings, setPdfSettings, setProvider, setScratchBase, setSessionsPeek, updateMemory, updatePersona, updateSkill } from "../api";
-const props = defineProps({ dark: Boolean });
+import { addModel, deleteAllMemory, deleteMemory, getMemory, getMemorySettings, getPersonas, getProviders, getSettings, removeModel, removeProvider, setAutoApprove, setCompactionSettings, setContextBar, setDefaultModel, setMemorySettings, setPdfSettings, setProvider, setScratchBase, setSessionsPeek, updateMemory, updatePersona } from "../api";
+const props = defineProps({ dark: Boolean, initialTab: { type: String, default: 'general' } });
 const emit = defineEmits(["theme-change", "settings-change"]);
 const tabs = [{ id: "general", label: "通用" }, { id: "models", label: "模型" }, { id: "context", label: "上下文" }, { id: "skills", label: "技能" }, { id: "memory", label: "记忆" }, { id: "personas", label: "智能体" }];
-const tab = ref("general");
+const tab = ref(props.initialTab);
 const settings = ref({});
 const providers = ref([]);
 const providerFields = ref({});
 const modelDraft = ref("");
-const skills = ref([]);
-const skillForm = ref({ name: "", description: "", instructions: "" });
 const memories = ref([]);
 const memorySettings = ref({ enabled: true, user_rules: "" });
 const personas = ref([]);
@@ -61,14 +60,13 @@ function savePdf() {
 }
 
 async function load() {
-  const results = await Promise.allSettled([getSettings(), getProviders(), listSkills(), getMemory(), getMemorySettings(), getPersonas()]);
+  const results = await Promise.allSettled([getSettings(), getProviders(), getMemory(), getMemorySettings(), getPersonas()]);
   if (results[0].status === "fulfilled") applySettings(results[0].value);
   else error.value = "无法加载设置，请重新打开设置页面";
   if (results[1].status === "fulfilled") providers.value = results[1].value;
-  if (results[2].status === "fulfilled") skills.value = results[2].value;
-  if (results[3].status === "fulfilled") memories.value = results[3].value;
-  if (results[4].status === "fulfilled") memorySettings.value = results[4].value;
-  if (results[5].status === "fulfilled") personas.value = results[5].value;
+  if (results[2].status === "fulfilled") memories.value = results[2].value;
+  if (results[3].status === "fulfilled") memorySettings.value = results[3].value;
+  if (results[4].status === "fulfilled") personas.value = results[4].value;
   providerFields.value = Object.fromEntries(providers.value.map((provider) => [provider.name, { ...(provider.values || {}) }]));
 }
 function flash(text = "已保存") { clearTimeout(flashTimer); saved.value = text; flashTimer = window.setTimeout(() => saved.value = "", 1800); }
@@ -77,9 +75,6 @@ function addModelRow() { if (!modelDraft.value.trim()) return; return perform(as
 function removeModelRow(value) { if (!confirm(`从模型列表移除 ${value}？`)) return; return perform(async () => { requireSuccess(await removeModel(value)); await refreshSettings(); flash(); }); }
 function saveProvider(provider) { return perform(async () => { requireSuccess(await setProvider(provider.name, providerFields.value[provider.name] || {})); providers.value = await getProviders(); await refreshSettings(); flash(); }); }
 function forgetProvider(provider) { if (!confirm(`删除 ${provider.title} 的已保存配置？`)) return; return perform(async () => { requireSuccess(await removeProvider(provider.name)); providers.value = await getProviders(); await refreshSettings(); flash(); }); }
-async function createSkillRow() { if (!skillForm.value.name || !skillForm.value.instructions) return; await createSkill({ ...skillForm.value, scope: "global" }); skillForm.value = { name: "", description: "", instructions: "" }; skills.value = await listSkills(); }
-async function toggleSkill(skill) { await updateSkill(skill.name, { enabled: !skill.enabled }); skill.enabled = !skill.enabled; }
-async function removeSkillRow(skill) { if (!confirm(`删除技能 ${skill.name}？`)) return; await deleteSkill(skill.name); skills.value = await listSkills(); }
 async function saveMemory(entry) { await updateMemory(entry.id, entry.content); flash(); }
 async function removeMemory(entry) { await deleteMemory(entry.id); memories.value = memories.value.filter((item) => item.id !== entry.id); }
 async function clearMemory() { if (!confirm("确定清空全部记忆？此操作无法撤销。")) return; await deleteAllMemory(); memories.value = []; }
@@ -148,8 +143,7 @@ onBeforeUnmount(() => clearTimeout(flashTimer));
 
       <template v-else-if="tab === 'skills'">
         <div class="page-head"><div><h1>技能</h1><p>管理可由输入框斜杠菜单调用的技能。</p></div></div>
-        <form class="card form-card" @submit.prevent="createSkillRow"><label>技能名称<input v-model="skillForm.name" required placeholder="review-code" /></label><label>说明<input v-model="skillForm.description" /></label><label>指令<textarea v-model="skillForm.instructions" required rows="5"></textarea></label><button class="btn primary">创建技能</button></form>
-        <div class="card-list"><article v-for="skill in skills" :key="skill.name" class="card list-card"><div><strong>/{{ skill.name }}</strong><small>{{ skill.description || '无说明' }} · {{ skill.scope === 'global' ? '全局' : '项目' }}</small></div><div class="actions"><label class="switch"><input type="checkbox" :checked="skill.enabled" @change="toggleSkill(skill)" /><span></span></label><button class="btn danger" @click="removeSkillRow(skill)">删除</button></div></article></div>
+        <SkillsManager @change="emit('settings-change')" />
       </template>
 
       <template v-else-if="tab === 'memory'">

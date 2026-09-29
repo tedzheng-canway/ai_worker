@@ -9,11 +9,11 @@ const root = path.resolve(__dirname, '../dist');
 const server = http.createServer((req, res) => {
   const file = path.resolve(root, '.' + (req.url === '/' ? '/index.html' : req.url.split('?')[0]));
   if (!file.startsWith(root + path.sep) || !fs.existsSync(file)) { res.writeHead(404); res.end(); return; }
-  res.setHeader('Content-Type', { '.js': 'text/javascript', '.css': 'text/css', '.html': 'text/html' }[path.extname(file)] || 'application/octet-stream');
+  res.setHeader('Content-Type', { '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.html': 'text/html' }[path.extname(file)] || 'application/octet-stream');
   res.end(fs.readFileSync(file));
 });
 
-async function fixture(browser, base) {
+async function fixture(browser, base, configure) {
   const context = await browser.newContext();
   const page = await context.newPage();
   const errors = [];
@@ -29,6 +29,7 @@ async function fixture(browser, base) {
     task: { id: 'task-1', title: '日报', instructions: '生成报告', enabled: true, schedule: '每天', run_count: 0, workspace: 'D:/project', agent: 'cowork' },
     runs: [],
   };
+  configure?.(state);
   await page.addInitScript(() => {
     window.__COWORKER_HTTP__ = 'http://127.0.0.1:9876';
     window.__COWORKER_WS__ = 'ws://127.0.0.1:9876';
@@ -38,11 +39,13 @@ async function fixture(browser, base) {
     const req = route.request();
     const url = new URL(req.url());
     const body = req.postData() ? req.postDataJSON() : {};
-    state.requests.push({ path: url.pathname, method: req.method(), body });
+    state.requests.push({ path: url.pathname, query: url.search, method: req.method(), body, headers: req.headers() });
     let result = { ok: true };
     const p = url.pathname;
     if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': '*' } });
-    if (p === '/v1/health') result = { model: state.settings.model };
+    const extra = await state.extraRoute?.(url, body, req);
+    if (extra !== undefined) result = extra;
+    else if (p === '/v1/health') result = { model: state.settings.model };
     else if (p === '/v1/settings') result = state.settings;
     else if (p === '/v1/personas') result = { personas: state.personas };
     else if (p.startsWith('/v1/personas/')) { Object.assign(state.personas.find((p) => p.id === url.pathname.split('/').at(-1)), body); result = { ok: true, personas: state.personas }; }
@@ -81,15 +84,17 @@ async function fixture(browser, base) {
       if (message.type === 'user_message') ws.send(JSON.stringify({ type: 'turn_start', data: { input: message.text } }));
     });
     ws.onClose(() => state.sockets.delete(id));
-    ws.send(JSON.stringify({ type: 'ready', data: { running: false, model: state.sessions.find((s) => s.session_id === id)?.model || state.settings.model, mode: 'interactive' } }));
+    ws.send(JSON.stringify({ type: 'ready', data: { running: false, model: state.sessions.find((s) => s.session_id === id)?.model || state.settings.model, mode: 'interactive', ...(state.ready || {}) } }));
   });
   state.emit = (id, type, data = {}) => state.sockets.get(id).send(JSON.stringify({ type, data }));
   await page.goto(base);
   await expect(page.locator('.session-row')).toHaveCount(2);
+  await expect.poll(() => state.sockets.has(state.sessions[0].session_id)).toBe(true);
   return { page, state, close: async () => { assert.deepEqual(errors, []); await context.close(); } };
 }
 
-(async () => {
+module.exports = { fixture, server, chromium, expect, assert };
+if (require.main === module) (async () => {
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const browser = await chromium.launch({ channel: process.env.P0_BROWSER_CHANNEL || 'msedge', headless: true });
   const base = `http://127.0.0.1:${server.address().port}`;
