@@ -1,30 +1,27 @@
 <script setup>
-import { computed, onMounted, ref, watch } from "vue";
-import { boardComment, boardTransition, getBoard, getBoardItem } from "../api";
-const props = defineProps({ sessionId: { type: String, required: true } });
-const board = ref(null);
-const detail = ref(null);
-const note = ref("");
-const states = ["open", "in_progress", "blocked", "review", "done", "canceled"];
-const labels = { open: "待处理", in_progress: "进行中", blocked: "受阻", review: "待审核", done: "已完成", canceled: "已取消" };
-const groups = computed(() => states.map((state) => ({ state, items: board.value?.items?.filter((item) => item.state === state) || [] })).filter((group) => group.items.length));
-async function refresh() { try { board.value = await getBoard(props.sessionId); } catch { board.value = { items: [] }; } }
-async function openItem(id) { detail.value = await getBoardItem(props.sessionId, id); }
-async function move(to) { await boardTransition(props.sessionId, detail.value.id, to); await refresh(); await openItem(detail.value.id); }
-async function addNote() { if (!note.value.trim()) return; await boardComment(props.sessionId, detail.value.id, note.value.trim()); note.value = ""; await openItem(detail.value.id); }
-watch(() => props.sessionId, () => { detail.value = null; refresh(); });
-onMounted(refresh);
+import {computed,ref,watch,onMounted,onBeforeUnmount} from 'vue';
+import {getBoard,getBoardItem,boardTransition,boardComment} from '../api';
+import {checked} from '../p2api';
+import BoardAttachment from './BoardAttachment.vue';
+import MarkdownView from './MarkdownView.vue';
+const props=defineProps({sessionId:{type:String,required:true},members:{type:Array,default:()=>[]},initialItem:Number});const emit=defineEmits(['open-session']);
+const board=ref(null),detail=ref(null),note=ref(''),changes=ref(''),error=ref(''),busy=ref(false);
+const states=['open','in_progress','blocked','review','done','canceled'],labels={open:'待处理',in_progress:'进行中',blocked:'受阻',review:'待审核',done:'已完成',canceled:'已取消'};
+const groups=computed(()=>states.map(state=>({state,items:board.value?.items?.filter(i=>i.state===state)||[]})).filter(g=>g.items.length));
+let timer,disposed=false,version=0,detailVersion=0;
+async function refresh(){const id=++version;const session=props.sessionId;try{const data=checked(await getBoard(session));if(id===version)board.value=data;if(detail.value && !busy.value)await openItem(detail.value.id,false);}catch(e){if(id===version)error.value=e.message;}}
+async function openItem(item,reset=true){const id=++detailVersion,session=props.sessionId;try{const value=checked(await getBoardItem(session,item));if(id===detailVersion){detail.value=value;if(reset){note.value='';changes.value='';}}}catch(e){if(id===detailVersion)error.value=e.message;}}
+async function mutate(fn){if(busy.value)return;busy.value=true;error.value='';try{checked(await fn());await refresh();if(detail.value)await openItem(detail.value.id,false);return true;}catch(e){error.value=e.message;return false;}finally{busy.value=false;}}
+async function addNote(){if(!note.value.trim())return;if(await mutate(()=>boardComment(props.sessionId,detail.value.id,note.value.trim())))note.value='';}
+async function requestChanges(){if(!changes.value.trim())return;if(await mutate(()=>boardTransition(props.sessionId,detail.value.id,'in_progress',changes.value.trim())))changes.value='';}
+function openWorker(actor){const worker=props.members.find(s=>s.team?.actor===actor||s.team?.name===actor);if(worker)emit('open-session',worker);}
+function openRef(reference){if(reference.startsWith('artifact:'))window.dispatchEvent(new CustomEvent('ocw-open-artifact',{detail:{path:reference.slice(9)}}));}
+async function poll(){await refresh();if(!disposed)timer=setTimeout(poll,4000);}
+watch(()=>props.sessionId,()=>{version++;detailVersion++;board.value=null;detail.value=null;refresh();});
+watch(()=>props.initialItem,id=>{if(id)openItem(id);});
+onMounted(()=>{poll();if(props.initialItem)openItem(props.initialItem);});onBeforeUnmount(()=>{disposed=true;version++;detailVersion++;clearTimeout(timer);});
 </script>
-
-<template>
-  <section class="page-view wide-page">
-    <div class="page-head"><div><h1>任务看板</h1><p>{{ board?.name || '当前会话的团队任务与进度' }}</p></div><button class="btn" @click="refresh">刷新</button></div>
-    <div class="board-layout">
-      <div class="board-list">
-        <section v-for="group in groups" :key="group.state" class="board-group"><h3><span :class="['state-dot', group.state]"></span>{{ labels[group.state] }} <small>{{ group.items.length }}</small></h3><button v-for="item in group.items" :key="item.id" :class="['board-item', { active: detail?.id === item.id }]" @click="openItem(item.id)"><span>#{{ item.id }}</span><strong>{{ item.title }}</strong><small>{{ item.assignee || '未分配' }}</small></button></section>
-        <div v-if="!groups.length" class="empty-card">当前会话没有看板任务。</div>
-      </div>
-      <aside v-if="detail" class="card board-detail"><span class="eyebrow">#{{ detail.id }} · {{ labels[detail.state] || detail.state }}</span><h2>{{ detail.title }}</h2><p>{{ detail.description || '没有任务说明。' }}</p><div v-if="detail.criteria"><strong>验收标准</strong><p>{{ detail.criteria }}</p></div><div class="state-actions"><button v-for="state in states" :key="state" class="btn" :class="{ primary: detail.state === state }" @click="move(state)">{{ labels[state] }}</button></div><h3>时间线</h3><div class="timeline"><div v-for="(event, index) in detail.timeline || []" :key="index"><strong>{{ event.actor || event.kind }}</strong><small>{{ event.ts || '' }}</small><p>{{ event.body || event.note || event.to || event.kind }}</p></div></div><form class="note-form" @submit.prevent="addNote"><textarea v-model="note" rows="3" placeholder="添加评论或交接说明"></textarea><button class="btn primary">发送评论</button></form></aside>
-    </div>
-  </section>
-</template>
+<template><section class="page-view wide-page"><div class="page-head"><div><h1>任务看板</h1><p>{{ board?.name || '当前项目' }}</p></div><button class="btn" @click="refresh">刷新</button></div><p v-if="error" class="error-text" role="alert">{{ error }}</p><div v-if="members.length" class="team-roster"><button v-for="member in members" :key="member.session_id" class="btn" @click="emit('open-session',member)">{{ member.team?.name || member.team?.actor || member.title }} · {{ member.liveness || '空闲' }}</button></div><div class="board-layout"><div class="board-list"><section v-for="group in groups" :key="group.state" class="board-group"><h3>{{ labels[group.state] }} · {{ group.items.length }}</h3><button v-for="item in group.items" :key="item.id" class="board-item" :class="{active:detail?.id===item.id}" @click="openItem(item.id)"><span>#{{ item.id }}</span><strong>{{ item.title }}</strong><small>{{ item.assignee || '未分配' }}</small><small v-if="item.blocker" class="error-text">{{ item.blocker }}</small></button></section><div v-if="!groups.length" class="empty-card">当前会话没有看板任务。</div></div>
+<aside v-if="detail" class="card board-detail"><span>#{{ detail.id }} · {{ labels[detail.state] || detail.state }}</span><h2>{{ detail.title }}</h2><MarkdownView :text="detail.description" /><p v-if="detail.criteria"><strong>验收标准：</strong>{{ detail.criteria }}</p><p v-if="detail.blocker" class="error-text">阻塞原因：{{ detail.blocker }}</p><button v-if="members.some(s=>s.team?.actor===detail.assignee||s.team?.name===detail.assignee)" class="btn" @click="openWorker(detail.assignee)">打开负责人会话：{{ detail.assignee }}</button><div class="actions"><button v-for="state in states" :key="state" class="btn" :disabled="busy || detail.state===state" @click="mutate(()=>boardTransition(sessionId,detail.id,state))">{{ labels[state] }}</button></div>
+<div v-for="ref in detail.refs || []" :key="ref"><BoardAttachment v-if="ref.startsWith('attachment://')" :session-id="sessionId" :reference="ref" /><button v-else-if="ref.startsWith('artifact:')" class="btn" @click="openRef(ref)">{{ ref }}</button><span v-else>{{ ref }}</span></div><h3 v-if="detail.links?.length">关联任务</h3><button v-for="link in detail.links || []" :key="link.kind+link.item" class="btn" @click="openItem(link.item)">{{ link.kind }} → #{{ link.item }}</button>
+<form v-if="detail.state==='review'" class="form-card" @submit.prevent="requestChanges"><label>请求修改意见<textarea v-model="changes" required rows="3"></textarea></label><button class="btn" :disabled="busy||!changes.trim()">请求修改</button></form><h3>时间线</h3><div v-for="(event,i) in detail.timeline || []" :key="event.seq || i" class="timeline-event"><strong>{{ event.actor }} · {{ event.kind }}</strong><small>{{ event.ts }}</small><p>{{ event.body || event.note || event.to }}</p><BoardAttachment v-for="ref in (event.refs || []).filter(r=>r.startsWith('attachment://'))" :key="ref" :session-id="sessionId" :reference="ref" /></div><form class="note-form" @submit.prevent="addNote"><textarea v-model="note" rows="3" placeholder="添加评论或交接说明"></textarea><button class="btn primary" :disabled="busy||!note.trim()">发送评论</button></form></aside></div></section></template>

@@ -2,8 +2,9 @@
 import { ref, watch } from 'vue';
 import { getRoots, addRoot, removeRoot, saveSessionAsProject, pickFolderViaServer, getTrustedWorkspaces, setWorkspaceTrusted, getProjectMenu, setProjectBinding, nameCurrentProject, setSessionSkill } from '../api';
 import { requireSuccess } from '../settings';
-const props = defineProps({ sessionId: String, workspace: String, skills: Array, running: Boolean, temporary: Boolean });
-const emit = defineEmits(['close', 'saved', 'skills-change', 'binding-change', 'open-board', 'open-memory']);
+import SessionIntegrations from './SessionIntegrations.vue';
+const props = defineProps({ sessionId: String, workspace: String, skills: Array, running: Boolean, temporary: Boolean, persona:String });
+const emit = defineEmits(['close', 'saved', 'skills-change', 'binding-change', 'open-board', 'open-memory', 'integrations-change', 'open-connectors']);
 const roots = ref([]), trusted = ref([]), menus = ref({}), names = ref({ memory: '', board: '' }), path = ref(''), writable = ref(false), destination = ref(''), error = ref(''), busy = ref(false);
 let generation = 0;
 async function load() {
@@ -30,4 +31,4 @@ watch(() => props.sessionId, () => { roots.value = []; menus.value = {}; error.v
 <h3>工作区命令信任</h3><p class="muted">信任工作区声明的命令；可在此撤销。</p><button v-if="workspace && !trusted.some(row => row.workspace === workspace)" class="btn" @click="act(() => setWorkspaceTrusted(workspace, true))">信任当前工作区</button><article v-for="row in trusted" :key="row.workspace" class="access-row"><strong>{{ row.workspace }}</strong><pre>{{ (row.requested_commands || []).join('\n') }}</pre><button class="btn" @click="act(() => setWorkspaceTrusted(row.workspace, false))">撤销信任</button></article>
 <h3>本会话技能</h3><p v-if="!skills?.length">暂无可用技能，请先在设置中启用。</p><label v-for="skill in skills" :key="skill.name" class="access-row"><span>/{{ skill.name }} · {{ skill.description }}</span><input type="checkbox" :checked="skill.enabled" @change="act(async () => { const r = requireSuccess(await setSessionSkill(sessionId, skill.name, !skill.enabled, workspace)); emit('skills-change'); return r; })" /></label>
 <section v-for="kind in ['memory','board']" :key="kind" class="project-binding"><h3>{{ kind === 'memory' ? '项目记忆' : '项目看板' }}</h3><label>绑定<select :value="menus[kind]?.bound || ''" :disabled="running" @change="bind(kind, $event.target.value)"><option value="">{{ menus[kind]?.derived?.label || '无目录项目' }}</option><option v-for="entry in menus[kind]?.named" :key="entry.key" :value="entry.name">{{ entry.name }}</option></select></label><form class="actions" @submit.prevent="name(kind)"><input v-model="names[kind]" :aria-label="`命名${kind === 'memory' ? '记忆' : '看板'}`" placeholder="为当前项目命名" required /><button class="btn">命名</button></form><template v-if="kind === 'memory'"><p class="muted">绑定决定此会话使用的项目记忆；记忆管理展示全部已保存内容。</p><button class="btn" @click="emit('open-memory')">打开记忆管理</button></template><button v-else class="btn" @click="emit('open-board')">查看当前项目看板</button></section>
-</fieldset></aside></template>
+</fieldset><SessionIntegrations :session-id="sessionId" :persona="persona" @change="emit('integrations-change')" @open-connectors="emit('open-connectors',$event)" /></aside></template>

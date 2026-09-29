@@ -17,6 +17,38 @@ import MarkdownView from './components/MarkdownView.vue';
 import ArtifactPanel from './components/ArtifactPanel.vue';
 import SessionAccess from './components/SessionAccess.vue';
 import SessionSearch from './components/SessionSearch.vue';
+import InboxView from './components/InboxView.vue';
+import InboxCard from './components/InboxCard.vue';
+import TeamChatView from './components/TeamChatView.vue';
+import { getInbox, getUnattended } from './p2api';
+import { inboxMatches } from './p2';
+import { getAutomations, connectEvents } from './api';
+const unattended=ref(false),sessionInbox=ref([]),inboxCount=ref(0),automationUnread=ref(0),backgroundError=ref('');
+const connectorFocus=ref(''),automationFocus=ref(''),runContext=ref(null),runToast=ref(null),boardItem=ref(null);
+const runContexts=new Map();
+const requestEvents=new Set(['permission_required','question_requested','directory_requested','plan_proposed','tool_requested','team_proposed','items_proposed']);
+let backgroundTimer,stopEvents,toastTimer,backgroundVersion=0;
+function reconcileInbox(item){for(const row of messages.value)if(row.inboxId===item?.id&&!row.resolved)row.resolved='inbox';}
+async function refreshBackground(){
+  const id=sessionId.value,version=++backgroundVersion;
+  const results=await Promise.allSettled([getInbox(),getUnattended(id),getAutomations(),getInbox(id)]);
+  if(disposed||version!==backgroundVersion||id!==sessionId.value)return;
+  if(results[0].status==='fulfilled')inboxCount.value=results[0].value.length;
+  if(results[3].status==='fulfilled'){
+    const next=results[3].value;
+    for(const old of sessionInbox.value)if(!next.some(row=>row.id===old.id))reconcileInbox(old);
+    for(const item of next){if(messages.value.some(row=>row.inboxId===item.id))continue;const live=[...messages.value].reverse().find(row=>inboxMatches(row,item)&&!row.resolved&&!row.inboxId);if(live)live.inboxId=item.id;}
+    sessionInbox.value=next;
+  }
+  if(results[1].status==='fulfilled')unattended.value=results[1].value;
+  if(results[2].status==='fulfilled')automationUnread.value=results[2].value.reduce((sum,t)=>sum+(Number(t.unseen_runs)||0),0);
+  const failed=results.find(r=>r.status==='rejected');backgroundError.value=failed?'后台状态同步失败：'+failed.reason.message:'';
+}
+function resolvedInbox(item){if(item?.session_id===sessionId.value){reconcileInbox(item);if(item.kind==='plan'){try{const answer=JSON.parse(item.resolution);if(answer.approved&&answer.mode)mode.value=answer.mode;}catch{}}}refreshBackground();refreshSessions();}
+function openConnectors(name=''){connectorFocus.value=name;surface.value='connectors';panel.value='';}
+function returnToAutomation(){automationFocus.value=runContext.value?.task_id || '';surface.value='automations';}
+function rememberRun(data){if(data.task_id)runContexts.set(data.session_id||data.id,data);}
+function globalEvent(event){if(event.type==='automation_run_started'){rememberRun(event.data);runToast.value=event.data;clearTimeout(toastTimer);toastTimer=setTimeout(()=>runToast.value=null,8000);refreshBackground();refreshSessions();}}
 import { inspectPdf, sessionSkills, renameSession, setNavLayout, setWorkspaceTrusted } from './api';
 import { prepareAttachment } from './attachments';
 import { requireSuccess } from './settings';
@@ -71,7 +103,10 @@ const manualRuns = new ManualRuns({ finalize: finalizeAutomationRun, storage: se
 manualRuns.changed();
 
 const activeSession = computed(() => sessions.value.find((item) => item.session_id === sessionId.value));
-const recentSessions = computed(() => sessions.value.filter((item) => !item.archived && !item.session_id.startsWith("__")));
+const teamLeadId=computed(()=>activeSession.value?.team?.lead_session || sessionId.value);
+const teamMembers=computed(()=>sessions.value.filter(row=>row.session_id===teamLeadId.value || row.team?.lead_session===teamLeadId.value));
+const teamId=computed(()=>activeSession.value?.team?.team_id || teamMembers.value.find(row=>row.team?.team_id)?.team?.team_id || '');
+const recentSessions = computed(() => sessions.value.filter((item) => !item.archived && item.team?.role!=='worker' && !item.session_id.startsWith("__")));
 const sessionGroups = computed(() => {
   const rows = recentSessions.value;
   const groups = new Map();
@@ -97,7 +132,7 @@ const contextWindow = computed(() => Number(config.value.model_context_windows?.
 const contextPercent = computed(() => contextWindow.value ? Math.min(100, Math.round((usage.value?.tokens || 0) / contextWindow.value * 100)) : 0);
 const runNotes = computed(() => manualRunEntries.value.filter((entry) => entry.note));
 const title = computed(() => activeSession.value?.title || "新对话");
-const pageTitles = { automations: "自动化", connectors: "连接器", audit: "活动审计", board: "任务看板", settings: "设置" };
+const pageTitles = { automations: "自动化", connectors: "连接器", audit: "活动审计", board: "任务看板", settings: "设置", inbox:"收件箱", teamchat:"团队聊天室" };
 const pageTitle = computed(() => surface.value === "session" ? title.value : pageTitles[surface.value]);
 const activePersona = computed(() => personas.value.find((item) => item.id === agent.value));
 const needsWorkspace = computed(() => Boolean((activePersona.value?.requires_folder || agent.value === "code") && !workspace.value));
@@ -114,7 +149,7 @@ const modeOptions = computed(() => [
 ]);
 const modelOptions = computed(() => [...new Set([model.value, ...models.value].filter(Boolean))].map((item) => ({ value: item, label: config.value.model_labels?.[item] || (item.includes(":") ? item.split(":").slice(1).join(":") : item), description: models.value.includes(item) ? item : `${item} · 当前会话模型` })));
 const requestKinds = new Set(["approval", "dirreq", "toolreq", "planreq", "teamreq", "itemsreq", "question"]);
-const pending = computed(() => [...messages.value].reverse().find((item) => requestKinds.has(item.kind) && !item.resolved));
+const pending = computed(() => unattended.value ? null : [...messages.value].reverse().find((item) => requestKinds.has(item.kind) && !item.resolved && !sessionInbox.value.some(row=>inboxMatches(item,row))));
 
 function addNotice(text) {
   messages.value.push({ kind: "notice", text });
@@ -127,6 +162,7 @@ function updateTool(data) {
 
 function handleEvent(event) {
   const data = event.data || {};
+  if(requestEvents.has(event.type))refreshBackground();
   if (event.type !== 'compacting') compacting.value = false;
   if (event.type === "ready") {
     connected.value = true;
@@ -140,14 +176,15 @@ function handleEvent(event) {
     if (data.workspace) workspace.value ||= data.workspace;
     temporary.value = !!data.temp_workspace;
     if (data.command_trust?.required) trustRequest.value = data.command_trust;
-    loadSkills();
+    loadSkills(); refreshBackground();
     if (typeof data.running === "boolean") running.value = data.running;
   } else if (event.type === "turn_start") {
     running.value = true;
     streaming.value = "";
     streamReasoning.value = '';
     const lastUser = [...messages.value].reverse().find(item => item.kind === 'user');
-    if (data.input && lastUser?.sentInput !== data.input && lastUser?.text !== data.input && lastUser?.text !== data.display) messages.value.push({ kind: "user", text: data.display || data.input });
+    if (data.source?.connector) messages.value.push({kind:"connector",source:data.source,text:data.source.text || data.display || data.input || "",ts:data.source.ts});
+    else if (data.input && lastUser?.sentInput !== data.input && lastUser?.text !== data.input && lastUser?.text !== data.display) messages.value.push({ kind: "user", text: data.display || data.input });
   } else if (event.type === "assistant_delta") {
     streaming.value += data.text || "";
   } else if (event.type === 'reasoning_delta') {
@@ -245,8 +282,8 @@ async function addFiles(files) {
 function pasteFiles(event) { const files = [...(event.clipboardData?.items || [])].filter(item => item.kind === 'file' && item.type.startsWith('image/')).map(item => item.getAsFile()).filter(Boolean); if (files.length) { event.preventDefault(); addFiles(files); } }
 function dropFiles(event) { if (event.dataTransfer?.files.length) { event.preventDefault(); addFiles(event.dataTransfer.files); } }
 function chooseSkill(skill) { chosenSkill.value = skill.name; draft.value = ''; slashDismissed.value = true; }
-function openArtifact(event) { artifactPath.value = event.detail?.path || ''; panel.value = 'files'; artifactVersion.value++; }
-function openBoard() { surface.value = 'board'; panel.value = ''; }
+function openArtifact(event) { surface.value='session'; artifactPath.value = event.detail?.path || ''; panel.value = 'files'; artifactVersion.value++; }
+function openBoard(event) { boardItem.value=Number(String(event?.detail?.path || '').replace(/^\D+/,'')) || null; surface.value = 'board'; panel.value = ''; }
 function scrollBottom() { atBottom.value = true; nextTick(() => { if (scroller.value) scroller.value.scrollTop = scroller.value.scrollHeight; }); }
 function trackScroll() { const el = scroller.value; if (el) atBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }
 function shortcut(event) { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); searchOpen.value = !searchOpen.value; } }
@@ -257,7 +294,7 @@ async function changeLayout(value) { await sessionAction(() => setNavLayout(valu
 function allowAnyway(item) { if (running.value || !connected.value) return; socket.allowAnyway(item.name, item.args); item.overridden = true; transmit({ text: `请重试 ${item.name}，我已允许这一次完全相同的操作。`, attachments: [] }); }
 async function trustWorkspace() { trustSaving.value = true; trustError.value = ''; try { requireSuccess(await setWorkspaceTrusted(trustRequest.value.workspace, true)); trustRequest.value = null; } catch (error) { trustError.value = error.message; } finally { trustSaving.value = false; } }
 function savedProject(path) { if (!path) return; workspace.value = path; temporary.value = false; socket?.close(); connections.delete(sessionId.value); connect(); artifactVersion.value++; refreshSessions(); }
-function resetSessionUi() { attachments.value = []; draft.value = ''; chosenSkill.value = ''; skills.value = []; streamReasoning.value = ''; totals.value = {}; todos.value = []; trustRequest.value = null; temporary.value = false; attachmentError.value = ''; artifactPath.value = ''; compacting.value = false; atBottom.value = true; }
+function resetSessionUi() { backgroundVersion++; sessionInbox.value=[]; unattended.value=false; runContext.value=null; boardItem.value=null; attachments.value = []; draft.value = ''; chosenSkill.value = ''; skills.value = []; streamReasoning.value = ''; totals.value = {}; todos.value = []; trustRequest.value = null; temporary.value = false; attachmentError.value = ''; artifactPath.value = ''; compacting.value = false; atBottom.value = true; }
 
 function releaseInactiveConnections() {
   for (const [id, connection] of connections) {
@@ -381,6 +418,7 @@ async function selectSession(item) {
   socket = null;
   surface.value = "session";
   sessionId.value = item.session_id;
+  runContext.value=runContexts.get(item.session_id) || manualRunEntries.value.find(r=>r.session_id===item.session_id) || null;
   agent.value = item.agent || "cowork";
   workspace.value = item.workspace || "";
   model.value = item.model || model.value;
@@ -427,6 +465,7 @@ function changePersona(value) {
 async function openRun(prepared) {
   resetSessionUi();
   manualRuns.track(prepared);
+  rememberRun(prepared);runContext.value=prepared;
   surface.value = "session";
   sessionId.value = prepared.session_id;
   workspace.value = prepared.workspace || "";
@@ -440,7 +479,8 @@ async function openRun(prepared) {
 }
 
 function openRunSession(payload) {
-  selectSession({ session_id: payload.id, workspace: payload.workspace, agent: payload.agent });
+  rememberRun(payload);
+  selectSession({ session_id: payload.id || payload.session_id, workspace: payload.workspace, agent: payload.agent });
 }
 
 async function reloadConfig() {
@@ -583,9 +623,12 @@ watch([messages, streaming, streamReasoning], () => nextTick(() => {
 watch(draft, () => { slashDismissed.value = false; skillIndex.value = 0; });
 watch(surface, (value) => { if (value === 'session') loadSkills(); });
 watch([sessionId, workspace], loadSkills);
+watch(sessionId,refreshBackground);
 watch(dark, (value) => document.documentElement.dataset.theme = value ? "dark" : "light", { immediate: true });
 
 onMounted(async () => {
+  stopEvents=connectEvents(globalEvent);
+  backgroundTimer=setInterval(refreshBackground,4000);
   window.addEventListener("click", closeRowMenu);
   window.addEventListener('keydown', shortcut);
   window.addEventListener('ocw-open-artifact', openArtifact);
@@ -610,6 +653,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   disposed = true;
+  backgroundVersion++;clearInterval(backgroundTimer);clearTimeout(toastTimer);stopEvents?.();
   window.removeEventListener("click", closeRowMenu);
   window.removeEventListener('keydown', shortcut);
   window.removeEventListener('ocw-open-artifact', openArtifact);
@@ -670,8 +714,9 @@ onBeforeUnmount(() => {
       </nav>
       <button v-if="showArchived && archivedSessions.length > config.sessions_peek" class="archived-toggle" @click="showAllArchived = !showAllArchived">{{ showAllArchived ? '收起归档' : '显示更多归档' }}</button>
       <nav class="surface-nav">
-        <button :class="{ active: surface === 'automations' }" @click="surface = 'automations'"><span>◷</span>自动化</button>
-        <button :class="{ active: surface === 'connectors' }" @click="surface = 'connectors'"><span>⌁</span>连接器</button>
+        <button :class="{ active: surface === 'automations' }" @click="automationFocus='';surface = 'automations'"><span>◷</span>自动化<span v-if="automationUnread" class="badge">{{ automationUnread }}</span></button>
+        <button :class="{active:surface==='inbox'}" @click="surface='inbox'"><span>▤</span>收件箱<span v-if="inboxCount" class="badge">{{ inboxCount }}</span></button>
+        <button :class="{ active: surface === 'connectors' }" @click="openConnectors()"><span>⌁</span>连接器</button>
         <button :class="{ active: surface === 'board' }" @click="surface = 'board'"><span>▦</span>任务看板</button>
         <button :class="{ active: surface === 'audit' }" @click="surface = 'audit'"><span>◎</span>活动审计</button>
         <button :class="{ active: surface === 'settings' }" @click="surface = 'settings'"><span>⚙</span>设置</button>
@@ -697,7 +742,12 @@ onBeforeUnmount(() => {
         <button class="btn" @click="selectSession(entry)">查看运行会话</button>
         <button v-if="entry.state === 'completed'" class="btn" @click="manualRuns.finish(entry.session_id)">重试回写</button>
       </div>
+      <p v-if="backgroundError" class="error-text status-note" role="alert">{{ backgroundError }} <button class="btn" @click="refreshBackground">重试</button></p>
+      <aside v-if="runToast" class="run-toast" role="status">自动化「{{ runToast.task_title }}」已开始运行 <button class="btn" @click="openRunSession(runToast);runToast=null">查看运行</button><button class="icon-button" aria-label="关闭运行通知" @click="runToast=null">×</button></aside>
       <template v-if="surface === 'session'">
+      <div v-if="runContext || sessionId.startsWith('__run__')" class="automation-context">自动化运行：{{ runContext?.task_title || '历史任务' }} <button class="btn" @click="returnToAutomation">返回自动化{{ runContext?.task_id ? '详情' : '列表' }}</button></div>
+      <div v-if="activeSession?.team?.role || teamMembers.length>1" class="team-roster"><span>团队成员</span><button v-for="member in teamMembers" :key="member.session_id" class="btn" :disabled="member.session_id===sessionId" @click="selectSession(member)">{{ member.team?.name || member.team?.actor || member.title }} · {{ member.team?.status || member.liveness || '空闲' }} {{ member.team?.current_item || '' }}</button><button v-if="teamId" class="btn" @click="surface='teamchat'">团队聊天 <span v-if="activeSession?.team?.chat_unread" class="badge">{{ activeSession.team.chat_unread }}</span></button><button class="btn" @click="openBoard">团队看板</button></div>
+      <p v-if="unattended" class="status-note">无人值守已开启 · 待处理事项会保存在收件箱。</p>
       <div ref="scroller" class="conversation" @scroll="trackScroll" @dragover.prevent @drop="dropFiles">
         <section v-if="!messages.length && !streaming" class="hero">
           <div class="hero-mark">◇</div>
@@ -716,6 +766,7 @@ onBeforeUnmount(() => {
               <div class="user-bubble">{{ item.text }}</div><small>{{ formatTime(item.ts) }}</small>
               <div v-if="item.attachments?.length" class="attachments"><div v-for="(file,i) in item.attachments" :key="i" class="attachment"><img v-if="file.kind === 'image'" :src="file.data_url" :alt="file.name" /><span>{{ file.name }}</span></div></div>
             </template>
+            <template v-else-if="item.kind === 'connector'"><div class="connector-message"><header tabindex="0" :title="[item.source.sender_id,item.source.channel_id].filter(Boolean).join(' · ')"><strong>{{ item.source.connector }} · {{ item.source.sender_name || item.source.sender_id || '外部消息' }}</strong><small>{{ item.source.channel_name || item.source.channel_id }} · {{ formatTime(item.ts) }}</small></header><p>{{ item.text }}</p><button v-if="item.source.board" class="btn" @click="openBoard">查看相关看板</button></div></template>
             <template v-else-if="item.kind === 'assistant'">
               <details v-if="item.reasoning" class="reasoning"><summary>思考过程</summary><pre>{{ item.reasoning }}</pre></details>
               <MarkdownView class="assistant-copy" :text="item.text" /><small>{{ formatTime(item.ts) }}</small>
@@ -732,9 +783,10 @@ onBeforeUnmount(() => {
       <button v-if="!atBottom" class="btn return-bottom" @click="scrollBottom">↓ 回到底部</button>
       <details v-if="todos.length" class="todo-progress"><summary>任务进度 {{ todos.filter(t => t.status === 'completed').length }} / {{ todos.length }}</summary><div v-for="(todo,i) in todos" :key="i"><span>{{ todo.status === 'completed' ? '✓' : todo.status === 'in_progress' ? '◉' : '○' }}</span> {{ todo.content }}</div></details>
 
+      <div v-if="sessionInbox.length" class="inline-inbox"><InboxCard v-for="item in sessionInbox" :key="item.id" :item="item" :live-item="messages.find(row=>row.inboxId===item.id)" :auto-approve="mode==='auto-approve'" inline @resolved="resolvedInbox" /></div>
       <section v-if="pending" :class="pending.kind === 'question' ? 'question-bar' : 'request-bar'">
         <QuestionPrompt v-if="pending.kind === 'question'" :key="`question-${sessionId}-${messages.indexOf(pending)}`" :item="pending" @answer="respond" />
-        <ApprovalPrompt v-else :key="`request-${sessionId}-${messages.indexOf(pending)}`" :item="pending" :auto-approve="mode === 'auto-approve'" :run-task="manualRunEntries.some(entry => entry.session_id === sessionId)" @resolve="resolveRequest" />
+        <ApprovalPrompt v-else :key="`request-${sessionId}-${messages.indexOf(pending)}`" :item="pending" :auto-approve="mode === 'auto-approve'" :run-task="!!runContext?.task_id || manualRunEntries.some(entry => entry.session_id === sessionId)" @resolve="resolveRequest" />
       </section>
 
       <footer class="composer-area">
@@ -765,14 +817,16 @@ onBeforeUnmount(() => {
         </div>
       </footer>
       </template>
-      <AutomationsView v-else-if="surface === 'automations'" :manual-runs="manualRunEntries" @run="openRun" @open-session="openRunSession" />
-      <ConnectorsView v-else-if="surface === 'connectors'" />
-      <BoardView v-else-if="surface === 'board'" :key="`${sessionId}-${bindingVersion}`" :session-id="sessionId" />
+      <AutomationsView v-else-if="surface === 'automations'" :manual-runs="manualRunEntries" :initial-task="automationFocus" @run="openRun" @open-session="openRunSession" @change="refreshBackground" @open-connectors="openConnectors" />
+      <ConnectorsView v-else-if="surface === 'connectors'" :initial-connector="connectorFocus" />
+      <BoardView v-else-if="surface === 'board'" :key="`${sessionId}-${bindingVersion}`" :session-id="sessionId" :members="teamMembers" :initial-item="boardItem" @open-session="selectSession" />
+      <InboxView v-else-if="surface==='inbox'" @open-session="selectSession" @open-connectors="openConnectors" @change="refreshBackground" />
+      <TeamChatView v-else-if="surface==='teamchat'" :team-id="teamId" @close="surface='session';refreshSessions()" />
       <AuditView v-else-if="surface === 'audit'" />
       <SettingsView v-else :dark="dark" :initial-tab="settingsTab" @theme-change="setTheme" @settings-change="reloadConfig" />
     </main>
     <ArtifactPanel v-if="surface === 'session' && panel === 'files'" :session-id="sessionId" :workspace="workspace" :refresh-key="artifactVersion" :initial-path="artifactPath" @close="panel = ''" />
-    <SessionAccess v-if="surface === 'session' && panel === 'access'" :key="sessionId" :session-id="sessionId" :workspace="workspace" :skills="skills" :running="running" :temporary="temporary" @close="panel = ''" @saved="savedProject" @skills-change="loadSkills" @binding-change="bindingVersion++" @open-board="openBoard" @open-memory="settingsTab = 'memory'; surface = 'settings'; panel = ''" />
+    <SessionAccess v-if="surface === 'session' && panel === 'access'" :key="sessionId" :session-id="sessionId" :workspace="workspace" :skills="skills" :running="running" :temporary="temporary" :persona="agent" @integrations-change="refreshBackground" @open-connectors="openConnectors" @close="panel = ''" @saved="savedProject" @skills-change="loadSkills" @binding-change="bindingVersion++" @open-board="openBoard" @open-memory="settingsTab = 'memory'; surface = 'settings'; panel = ''" />
     <SessionSearch v-if="searchOpen" :sessions="sessions" :personas="personas" @close="searchOpen = false" @select="selectSession" />
     <div v-if="renameTarget" class="dialog-overlay" @click.self="renameTarget = null"><form class="search-dialog form-card" role="dialog" aria-label="重命名对话" @submit.prevent="saveRename"><h3>重命名对话</h3><input v-model="renameDraft" aria-label="对话标题" required autofocus /><p v-if="actionError" class="error-text">{{ actionError }}</p><div class="actions"><button class="btn primary" :disabled="actionBusy || !renameDraft.trim()">保存名称</button><button type="button" class="btn" @click="renameTarget = null">取消</button></div></form></div>
     <div v-if="trustRequest" class="dialog-overlay"><section class="search-dialog form-card" role="dialog" aria-label="工作区命令信任"><h3>信任工作区声明的命令？</h3><p>{{ trustRequest.workspace }}</p><pre>{{ (trustRequest.requested_commands || []).join('\n') }}</pre><p>信任后这些声明的命令可按工作区规则执行。你可以在“权限与项目”中撤销。</p><p v-if="trustError" class="error-text">{{ trustError }}</p><div class="actions"><button class="btn" :disabled="trustSaving" @click="trustRequest = null">继续逐次询问</button><button class="btn primary" :disabled="trustSaving" @click="trustWorkspace">信任此工作区</button></div></section></div>

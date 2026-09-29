@@ -4,7 +4,7 @@ const apiToken = () => globalThis.__COWORKER_API_TOKEN__ || import.meta.env.VITE
 
 const tokenHeader = `X-${"Open"}${"Worker"}-Token`;
 
-async function request(path, options = {}) {
+export async function request(path, options = {}) {
   const headers = new Headers(options.headers);
   const token = apiToken();
   if (token) headers.set(tokenHeader, token);
@@ -16,6 +16,25 @@ async function request(path, options = {}) {
 function openSocket(url) {
   const token = apiToken();
   return token ? new WebSocket(url, ["openworker", token]) : new WebSocket(url);
+}
+
+export async function fetchBlob(path) {
+  const headers = new Headers();
+  if (apiToken()) headers.set(tokenHeader, apiToken());
+  const response = await fetch(`${httpBase()}${path}`, { headers });
+  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+  return response.blob();
+}
+export function connectEvents(onEvent) {
+  let socket, timer, closed = false;
+  function open() {
+    if (closed) return;
+    socket = openSocket(`${wsBase()}/ws/events`);
+    socket.onmessage = (event) => { try { onEvent(JSON.parse(event.data)); } catch {} };
+    socket.onclose = () => { if (!closed) timer = setTimeout(open, 5000); };
+  }
+  open();
+  return () => { closed = true; clearTimeout(timer); if (socket) { socket.onclose = null; socket.close(); } };
 }
 
 export const getHealth = () => request("/v1/health");
