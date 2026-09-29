@@ -229,8 +229,6 @@ npm run preview -- --host 127.0.0.1 --port 4173
 
 打开 [http://127.0.0.1:4173](http://127.0.0.1:4173)。构建阶段不会自动读取开发令牌，所以上述本地预览流程显式传入令牌；它会被编入构建产物，此产物仅用于本机预览，不应发布到公共站点。后端重启后，需使用新令牌重新构建。
 
-浏览器回归命令为 `npm run test:browser`。目前这部分脚本仍依赖原 React 参考目录中的 `surfaces/gui/node_modules/@playwright/test`，默认启动 Microsoft Edge；`surfaces/gui/` 被 Git 忽略，因此仅克隆本仓库并执行 `npm ci` 尚不足以运行浏览器回归。此限制不影响 Vue 开发服务器、生产构建和 `npm test`。测试使用模拟 HTTP/WebSocket 服务，具体前置条件与覆盖范围见 [前端测试说明](surfaces_vue/tests/README.md)。
-
 ## 🔎 常见启动问题
 
 | 现象 | 排查方式 |
