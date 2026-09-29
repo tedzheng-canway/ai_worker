@@ -38,6 +38,12 @@ function luminance(hex) {
     await page.getByRole('button',{name:/切换深黑外观/}).click();
     await page.locator('.surface-nav button').filter({hasText:'设置'}).click();
     await expect(page.locator('.settings-page h1')).toHaveText('通用');
+    const centered=await page.evaluate(()=>{
+      const main=document.querySelector('.main').getBoundingClientRect();
+      const form=document.querySelector('.settings-fields').getBoundingClientRect();
+      return Math.abs((main.left+main.right-form.left-form.right)/2)<2;
+    });
+    assert(centered,'Settings content must be centered within the main workspace');
     await screenshot('settings');
     await page.getByTitle('收起侧边栏').click();
     await page.setViewportSize({width:390,height:844});

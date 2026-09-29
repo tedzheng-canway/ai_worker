@@ -33,6 +33,16 @@ html[data-style="linear"] .app .page-head h1 { font-size: 24px; }
 html[data-style="linear"] .app .page-head p { max-width: 70ch; color: var(--muted); }
 html[data-style="linear"] .app :is(.section-label,.group-title) { color: var(--muted); font-size: 12px; text-transform: none; letter-spacing: 0; }
 html[data-style="linear"] .subnav { background: var(--chrome); border-color: var(--line); }
+/* Balance the category rail so the form is centered in the main workspace. */
+html[data-style="linear"] .settings-layout { grid-template-columns: 160px minmax(0,1fr) 160px; }
+html[data-style="linear"] .settings-page { grid-column: 2; min-width: 0; }
+@media(max-width:1100px) {
+  html[data-style="linear"] .settings-layout { display: flex; flex-direction: column; overflow: hidden; }
+  html[data-style="linear"] .settings-layout > .subnav { display: flex; flex-shrink: 0; gap: 4px; overflow-x: auto; padding: 10px 16px; border-right: 0; border-bottom: 1px solid var(--line); }
+  html[data-style="linear"] .settings-layout > .subnav h2 { display: none; }
+  html[data-style="linear"] .settings-layout > .subnav button { width: auto; white-space: nowrap; }
+  html[data-style="linear"] .settings-page { height: auto; min-height: 0; overflow-y: auto; }
+}
 html[data-style="linear"] .app button {
   min-height: 36px; border: 1px solid var(--line); border-radius: 6px;
   background: #ffffff08; color: var(--ink); font-weight: 500;
