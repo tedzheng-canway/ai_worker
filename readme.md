@@ -1,12 +1,12 @@
-# AIWorker
+# 🤖 AIWorker
 
 AIWorker 是一个面向日常办公、文件处理和开发协作的 AI 工作助手。它将大语言模型、工具执行、工作区文件、任务审批和会话管理连接起来，让用户通过自然语言提出任务，并在同一个界面中查看执行过程、确认关键操作和获取结果。
 
-**开发者与主要维护者：tedzheng。**
+**👨‍💻 开发者与主要维护者：tedzheng。**
 
 项目借鉴了吴恩达团队的核心任务循环方法论，并结合现有运行时与工具体系，构建 AIWorker 的交互体验。当前主要使用 **Python 后端 + Vue Web 前端**，通过 HTTP 和 WebSocket 通信。
 
-## 核心任务循环
+## 🔄 核心任务循环
 
 AIWorker 将一次任务组织为连续的「模型判断 → 工具执行 → 结果反馈」循环：
 
@@ -18,7 +18,7 @@ AIWorker 将一次任务组织为连续的「模型判断 → 工具执行 → �
 
 核心循环位于 `coworker/engine.py`，工具与智能体组装位于 `coworker/agent.py`，会话调度位于 `coworker/server/manager.py`。模型负责选择下一步，工具负责执行实际操作，前端负责呈现过程和承接用户反馈。
 
-## 主要功能
+## ✨ 主要功能
 
 - **会话与模型**：流式对话、多提供商配置、连接测试、模型切换、上下文用量与压缩设置。
 - **工作区与文件**：目录访问、文件读写、附件上传，以及 Markdown、图片、PDF、CSV 和 Excel 等内容预览。
@@ -29,9 +29,9 @@ AIWorker 将一次任务组织为连续的「模型判断 → 工具执行 → �
 
 模型服务与外部连接器需要相应的凭据或账号授权。当前启动指引针对本地 Web 版本；桌面端打包暂不纳入当前交付范围。
 
-## 技术栈
+## 🛠️ 技术栈
 
-### 后端
+### 🐍 后端
 
 | 技术 | 用途 |
 | --- | --- |
@@ -48,7 +48,7 @@ AIWorker 将一次任务组织为连续的「模型判断 → 工具执行 → �
 
 后端依赖定义在 [coworker/requirements.txt](coworker/requirements.txt)。其中 `aisuite` 固定到一个 Git 提交，安装时需要 Git，并能访问对应 GitHub 仓库。后端使用本地 SQLite 和文件存储，无需单独部署数据库服务。
 
-### 前端
+### 🖥️ 前端
 
 | 技术 | 当前锁定版本 | 用途 |
 | --- | --- | --- |
@@ -63,7 +63,7 @@ AIWorker 将一次任务组织为连续的「模型判断 → 工具执行 → �
 
 上表版本取自 [surfaces_vue/package-lock.json](surfaces_vue/package-lock.json)，依赖声明与脚本见 [surfaces_vue/package.json](surfaces_vue/package.json)。测试使用 Node 内置测试运行器和 Playwright。
 
-## 环境要求
+## 📋 环境要求
 
 开发环境推荐使用 **Python 3.11.x + Node.js 22.x**。开始前，请安装以下工具，并确保可在终端中调用：
 
@@ -74,7 +74,7 @@ AIWorker 将一次任务组织为连续的「模型判断 → 工具执行 → �
 | npm | 10.x | 用于安装前端依赖，可使用 Node.js 附带的 npm |
 | Git | — | 用于获取源码及安装 Git 来源的 Python 依赖 |
 
-## 项目结构
+## 📁 项目结构
 
 ```text
 AIWorker/
@@ -98,7 +98,7 @@ AIWorker/
 └── readme.md
 ```
 
-## 启动指引
+## 🚀 启动指引
 
 从 GitHub 克隆本仓库后，进入源码根目录，即同时包含 `coworker/` 和 `surfaces_vue/` 的目录。以下分别提供 Windows PowerShell 和 macOS / Linux 的命令，选择适合自己系统的一组执行。
 
@@ -158,7 +158,7 @@ npm run dev
 
 浏览器打开 [http://localhost:1421](http://localhost:1421)。前端默认连接 `http://127.0.0.1:8765` 和 `ws://127.0.0.1:8765`。
 
-**启动顺序为后端 → 前端。** 后端生成本地接口令牌，Vite 启动时从状态目录读取 `sidecar-8765.token`。后端重新启动后会生成新令牌，此时应重启前端开发服务器并刷新页面。
+> 💡 **启动顺序为后端 → 前端。** 后端生成本地接口令牌，Vite 启动时从状态目录读取 `sidecar-8765.token`。后端重新启动后会生成新令牌，此时应重启前端开发服务器并刷新页面。
 
 ### 4. 配置模型并开始任务
 
@@ -169,7 +169,7 @@ npm run dev
 
 启动页面不要求事先填写模型密钥，实际执行模型任务前需要完成模型配置。外部连接器可按需接入。
 
-## 配置与数据目录
+## ⚙️ 配置与数据目录
 
 默认状态目录如下，可通过 `COWORKER_STATE_DIR` 修改：
 
@@ -190,7 +190,7 @@ npm run dev
 
 如修改后端端口，需要同时修改 HTTP、WebSocket 地址，并提供对应端口的令牌。Vite 的自动读取路径固定为 `sidecar-8765.token`。
 
-## 构建与验证
+## 🧪 构建与验证
 
 在 `surfaces_vue/` 中运行：
 
@@ -229,7 +229,7 @@ npm run preview -- --host 127.0.0.1 --port 4173
 
 浏览器回归命令为 `npm run test:browser`。目前这部分脚本仍依赖原 React 参考目录中的 `surfaces/gui/node_modules/@playwright/test`，默认启动 Microsoft Edge；`surfaces/gui/` 被 Git 忽略，因此仅克隆本仓库并执行 `npm ci` 尚不足以运行浏览器回归。此限制不影响 Vue 开发服务器、生产构建和 `npm test`。测试使用模拟 HTTP/WebSocket 服务，具体前置条件与覆盖范围见 [前端测试说明](surfaces_vue/tests/README.md)。
 
-## 常见启动问题
+## 🔎 常见启动问题
 
 | 现象 | 排查方式 |
 | --- | --- |
@@ -239,7 +239,7 @@ npm run preview -- --host 127.0.0.1 --port 4173
 | 前端端口 1421 已被占用 | 关闭占用进程，或通过 `npm run dev -- --port 1422` 使用其他端口 |
 | 后端已连接，但模型调用失败 | 在「设置 → 模型」检查凭据、端点、模型名称和连接测试结果 |
 
-## 致谢与许可证
+## 🙌 致谢与许可证
 
 感谢吴恩达团队的核心任务循环方法论及相关开源工作。AIWorker 由 **tedzheng** 开发并主要维护。
 
