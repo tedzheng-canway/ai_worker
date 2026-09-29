@@ -35,4 +35,5 @@ test('tool steps group only consecutive tools; todos support strings and objects
   const rows = transcriptGroups([{kind:'tool',name:'a'},{kind:'tool',name:'b'},{kind:'assistant',text:'x'},{kind:'tool',name:'c'}]);
   assert.deepEqual(rows.map(r=>r.kind),['steps','assistant','steps']); assert.equal(rows[0].items.length,2);
   assert.deepEqual(normalizeTodos(['one',{content:'two',status:'completed'}]),[{content:'one',status:'pending'},{content:'two',status:'completed'}]);
+  assert.deepEqual(normalizeTodos([{content:'finished',status:'done'},{content:'working',status:'in_progress'},{content:'next',status:'pending'}]),[{content:'finished',status:'completed'},{content:'working',status:'in_progress'},{content:'next',status:'pending'}]);
 });

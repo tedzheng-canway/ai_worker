@@ -188,6 +188,8 @@ function handleEvent(event) {
     loadSkills(); refreshBackground();
     if (typeof data.running === "boolean") running.value = data.running;
   } else if (event.type === "turn_start") {
+    // Retry/resume continues the same task; fresh input starts a new progress list.
+    if ((data.input && data.input !== '(resumed)') || data.source?.connector) todos.value = [];
     running.value = true;
     streaming.value = "";
     streamReasoning.value = '';
@@ -341,6 +343,7 @@ function openConnection(id, folder, persona, openingText = "") {
       if (openingText) {
         const packet = typeof openingText === 'string' ? { text: openingText, attachments: [] } : openingText;
         if (id === sessionId.value) {
+          todos.value = [];
           messages.value.push({ kind: "user", text: packet.skill ? `/${packet.skill} ${packet.text}` : packet.text, sentInput: packet.text, attachments: packet.attachments, ts: Date.now() / 1000 });
           draft.value = "";
         }
@@ -443,7 +446,9 @@ async function selectSession(item) {
     messages.value = historyItems(rows);
     usage.value = historyUsage(rows);
     totals.value = usageTotals(rows);
-    const todo = [...messages.value].reverse().find(item => item.kind === 'tool' && item.name === 'todo_write');
+    // Do not resurrect a previous task's plan after a newer user message.
+    const latestTurn = rows.slice(rows.findLastIndex(row => row.role === 'user') + 1);
+    const todo = historyItems(latestTurn).reverse().find(item => item.kind === 'tool' && item.name === 'todo_write');
     if (todo) todos.value = normalizeTodos(todo.args.todos || todo.args.items);
   } catch { if (sessionId.value === item.session_id) addNotice("无法加载历史消息"); }
   if (sessionId.value !== item.session_id) return;
@@ -534,6 +539,7 @@ function send() {
   attachments.value = []; chosenSkill.value = '';
 }
 function transmit(packet) {
+  todos.value = [];
   messages.value.push({ kind: 'user', text: packet.skill ? `/${packet.skill} ${packet.text}` : packet.text, sentInput: packet.text, attachments: packet.attachments, ts: Date.now() / 1000 });
   running.value = true;
   socket.userMessage(packet.text, model.value, packet.attachments, packet.skill);

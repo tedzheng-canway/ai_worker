@@ -58,6 +58,54 @@ function setup(state) {
  async function check(name,fn,configure=()=>{}) {const f=await fixture(browser,base,state=>{setup(state);configure(state);});try{await fn(f);await f.close();console.log(`PASS ${++count}: ${name}`);}catch(error){await f.page.screenshot({path:path.join(__dirname,'../dist/p1-failure.png'),fullPage:true});throw error;}}
  const end=(state)=>{state.emit('s1','turn_end',{status:'completed'});state.emit('s1','turn_done');};
  try {
+  await check('todo progress updates live with backend done status and restores completed history',async({page,state})=>{
+   const summary=page.locator('.todo-progress summary');
+   const todos=[{content:'检查问题',status:'in_progress'},{content:'修复问题',status:'pending'}];
+   const publish=()=>state.emit('s1','tool_proposed',{name:'todo_write',arguments:{todos}});
+   state.emit('s1','turn_start',{input:'修复问题'});publish();
+   await expect(summary).toHaveText('任务进度 0 / 2');
+   await summary.click();await expect(page.locator('.todo-progress div').first()).toContainText('◉');
+   todos[0].status='done';todos[1].status='in_progress';publish();
+   await expect(summary).toHaveText('任务进度 1 / 2');
+   await expect(page.locator('.todo-progress div').first()).toContainText('✓');
+   await expect(page.locator('.todo-progress div').last()).toContainText('◉');
+   // Ending a turn does not imply every planned step was actually completed.
+   end(state);await expect(summary).toHaveText('任务进度 1 / 2');
+   todos[1].status='done';publish();end(state);
+   await expect(summary).toHaveText('任务进度 2 / 2');
+   await expect(page.locator('.todo-progress div').last()).toContainText('✓');
+   const previousRoute=state.extraRoute;
+   const history=[
+    {role:'user',content:'修复问题'},
+    {role:'assistant',tool_calls:[{id:'todo-final',function:{name:'todo_write',arguments:JSON.stringify({todos})}}]},
+    {role:'tool',tool_call_id:'todo-final',content:JSON.stringify({count:2,todos})}
+   ];
+   state.extraRoute=(url,body,req)=>url.pathname==='/v1/sessions/s1/messages' ? {messages:history} : previousRoute(url,body,req);
+   await page.locator('.session-row').filter({hasText:'会话 2'}).click();
+   await expect(summary).toHaveCount(0);
+   await page.locator('.session-row').filter({hasText:'会话 1'}).click();
+   await expect(summary).toHaveText('任务进度 2 / 2');
+   await page.locator('.composer textarea').fill('你好');
+   await page.getByRole('button',{name:'发送',exact:true}).click();
+   await expect(summary).toHaveCount(0);
+   state.emit('s1','assistant_message',{text:'你好！'});end(state);
+   history.push({role:'user',content:'你好'},{role:'assistant',content:'你好！'});
+   await page.locator('.session-row').filter({hasText:'会话 2'}).click();
+   await page.locator('.session-row').filter({hasText:'会话 1'}).click();
+   await expect(summary).toHaveCount(0);
+   await expect.poll(()=>state.sockets.has('s1')).toBe(true);
+   state.emit('s1','turn_start',{input:'新任务'});
+   state.emit('s1','tool_proposed',{name:'todo_write',arguments:{todos:[{content:'新的步骤',status:'in_progress'}]}});
+   await expect(summary).toHaveText('任务进度 0 / 1');
+   state.emit('s1','error',{error:'暂时失败'});
+   state.emit('s1','turn_start',{input:''});
+   await expect(summary).toHaveText('任务进度 0 / 1');
+   state.emit('s1','turn_start',{input:'(resumed)'});
+   await expect(summary).toHaveText('任务进度 0 / 1');
+   end(state);
+   state.emit('s1','turn_start',{input:'另一个问题'});
+   await expect(summary).toHaveCount(0);
+  });
   await check('Markdown links, authenticated artifacts, isolated HTML and file previews',async({page,state})=>{
    state.emit('s1','assistant_message',{text:'# Office\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n[打开报告](artifact:report.md)'});
    await expect(page.locator('.markdown-body h1')).toHaveText('Office'); await expect(page.locator('.markdown-body table td')).toHaveCount(2);
@@ -117,6 +165,11 @@ function setup(state) {
   await check('workspace trust, root errors/permissions, project binding and save/reconnect',async({page,state})=>{
    state.emit('s1','ready',{...state.ready,command_trust:{required:true,workspace:'D:/work',requested_commands:['npm test']}});await page.getByRole('button',{name:'信任此工作区',exact:true}).click();await expect.poll(()=>state.trusted.length).toBe(1);
    await page.getByRole('button',{name:'权限与项目',exact:true}).click();state.failRoot=true;await page.getByLabel('额外目录').fill('D:/extra');await page.getByRole('button',{name:'添加目录'}).click();await expect(page.locator('.access-panel [role=alert]')).toContainText('目录不可访问');await expect(page.getByLabel('额外目录')).toHaveValue('D:/extra');
+   await page.screenshot({path:path.join(__dirname,'../dist/p1-access-desktop.png')});
+   await page.setViewportSize({width:390,height:844});
+   assert(await page.locator('.access-panel').evaluate(el=>el.scrollWidth<=el.clientWidth));
+   await page.screenshot({path:path.join(__dirname,'../dist/p1-access-mobile.png')});
+   await page.setViewportSize({width:1280,height:800});
    state.failRoot=false;await page.getByRole('button',{name:'添加目录'}).click();const root=page.locator('.access-row').filter({hasText:'D:/extra'});await root.locator('input').check();await expect.poll(()=>state.roots.find(r=>r.path==='D:/extra')?.writable).toBe(true);await root.getByRole('button',{name:'移除目录'}).click();await expect(root).toHaveCount(0);
    await page.getByRole('button',{name:'撤销信任'}).click();await expect.poll(()=>state.trusted.length).toBe(0);
    const board=page.locator('.project-binding').filter({hasText:'项目看板'});await board.locator('select').selectOption('运营');await expect.poll(()=>state.binding.board).toBe('运营');await board.getByRole('button',{name:'查看当前项目看板'}).click();await expect(page.locator('.board-item')).toContainText('运营项目任务');

@@ -6,7 +6,9 @@ export function addUsage(previous, raw) {
   return { ...previous, [key]: totals };
 }
 export const usageTotals = (rows) => rows.filter(r => r.role === 'assistant').reduce((sum, row) => addUsage(sum, row.usage), {});
-export const normalizeTodos = (items) => (Array.isArray(items) ? items : []).map((item) => typeof item === 'string' ? { content: item, status: 'pending' } : { content: item.content || item.title || '', status: item.status || 'pending' });
+// The backend todo_write schema uses "done"; the progress UI uses "completed".
+// Normalize both live tool arguments and restored history at this boundary.
+export const normalizeTodos = (items) => (Array.isArray(items) ? items : []).map((item) => typeof item === 'string' ? { content: item, status: 'pending' } : { content: item.content || item.title || '', status: item.status === 'done' ? 'completed' : item.status || 'pending' });
 export function transcriptGroups(items) {
   const groups = [];
   for (const item of items) {
