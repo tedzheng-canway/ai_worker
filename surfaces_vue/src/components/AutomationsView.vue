@@ -2,8 +2,8 @@
 import { t } from '../i18n';
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { createAutomation, deleteAutomation, getAutomation, getAutomations, markAutomationSeen, runAutomation, updateAutomation, getConnectors } from '../api';
-import { checked } from '../p2api';
-import { scheduleForm, schedulePayload } from '../p2';
+import { checked } from '../api-result.js';
+import { scheduleForm, schedulePayload } from '../automation-schedule.js';
 import { automationTemplates, templateInstructions } from '../automationTemplates';
 import ScheduleEditor from './ScheduleEditor.vue';
 import ChannelPicker from './ChannelPicker.vue';

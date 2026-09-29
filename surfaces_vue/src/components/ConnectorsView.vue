@@ -2,7 +2,8 @@
 import { t } from '../i18n';
 import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue';
 import { getConnectors, disconnectConnector, updateConnectorTools } from '../api';
-import { checked, getCloudStatus, cloudLogin, cloudLogout } from '../p2api';
+import { checked } from '../api-result.js';
+import { getCloudStatus, cloudLogin, cloudLogout } from '../cloud-api.js';
 import ConnectorAuth from './ConnectorAuth.vue';
 import ConnectorAccounts from './ConnectorAccounts.vue';
 import McpManager from './McpManager.vue';

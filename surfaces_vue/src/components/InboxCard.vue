@@ -4,8 +4,9 @@ import { computed, ref } from 'vue';
 import QuestionPrompt from './QuestionPrompt.vue';
 import ApprovalPrompt from './ApprovalPrompt.vue';
 import MarkdownView from './MarkdownView.vue';
-import { checked, resolveInboxItem } from '../p2api';
-import { parkedPrompt, parkedResolution } from '../p2';
+import { checked } from '../api-result.js';
+import { resolveInboxItem } from '../inbox-api.js';
+import { parkedPrompt, parkedResolution } from '../inbox-prompts.js';
 const props=defineProps({item:Object,inline:Boolean,liveItem:Object,autoApprove:Boolean});const emit=defineEmits(['resolved','open-session']);
 const busy=ref(false),error=ref(''),resolved=ref(false);const prompt=computed(()=>parkedPrompt(props.item,props.liveItem));
 async function resolve(value){if(busy.value||resolved.value)return;busy.value=true;error.value='';try{checked(await resolveInboxItem(props.item.id,value));resolved.value=true;emit('resolved',{...props.item,resolution:value});}catch(e){error.value=e.message;emit('resolved',null);}finally{busy.value=false;}}

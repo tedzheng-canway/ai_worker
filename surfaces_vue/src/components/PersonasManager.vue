@@ -2,9 +2,10 @@
 import { t } from '../i18n';
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { fetchBlob, getPersonas, getSessions, pickFolderViaServer, updatePersona } from '../api';
-import { deletePersona, exportPersona, getGallery, getGalleryDetail, getPersonaDetail, installPersona, setPersonaConnection } from '../p3api';
-import { checked, cloudLogin, getCloudStatus } from '../p2api';
-import { personaConnections } from '../p3';
+import { deletePersona, exportPersona, getGallery, getGalleryDetail, getPersonaDetail, installPersona, setPersonaConnection } from '../personas-api.js';
+import { checked } from '../api-result.js';
+import { cloudLogin, getCloudStatus } from '../cloud-api.js';
+import { personaConnections } from '../persona-connections.js';
 import MarkdownView from './MarkdownView.vue';
 const emit = defineEmits(['change', 'connectors', 'use']);
 const personas = ref([]), detail = ref(null), consent = ref([]), busy = ref(false), error = ref(''), message = ref('');

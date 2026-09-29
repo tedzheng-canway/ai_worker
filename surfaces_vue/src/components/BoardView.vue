@@ -2,7 +2,7 @@
 import { t } from '../i18n';
 import {computed,ref,watch,onMounted,onBeforeUnmount} from 'vue';
 import {getBoard,getBoardItem,boardTransition,boardComment} from '../api';
-import {checked} from '../p2api';
+import { checked } from '../api-result.js';
 import BoardAttachment from './BoardAttachment.vue';
 import MarkdownView from './MarkdownView.vue';
 const props=defineProps({sessionId:{type:String,required:true},members:{type:Array,default:()=>[]},initialItem:Number});const emit=defineEmits(['open-session']);

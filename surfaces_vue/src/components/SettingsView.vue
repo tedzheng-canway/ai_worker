@@ -4,7 +4,7 @@ import { onMounted, onBeforeUnmount, ref } from "vue";
 import ProviderManager from './ProviderManager.vue';
 import PersonasManager from './PersonasManager.vue';
 import { themePreference, languagePreference, setTheme, setLanguage } from '../preferences';
-import { setAutoApproveShadow } from '../p3api';
+import { setAutoApproveShadow } from '../settings-api.js';
 import SkillsManager from './SkillsManager.vue';
 import { compactionPayload, pdfPayload, requireSuccess, sessionLimit, settingsWithDefaults } from "../settings";
 import { deleteAllMemory, deleteMemory, getMemory, getMemorySettings, getSettings, setAutoApprove, setCompactionSettings, setContextBar, setMemorySettings, setPdfSettings, setScratchBase, setSessionsPeek, updateMemory } from '../api';

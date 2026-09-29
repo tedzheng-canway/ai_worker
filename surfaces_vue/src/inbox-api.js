@@ -1,0 +1,13 @@
+import { request } from './api.js';
+import { enc, write } from './api-request.js';
+export const getInbox = async (session_id='',state='pending') => (await request(`/v1/inbox?${new URLSearchParams({...session_id?{session_id}:{},...state?{state}:{}})}`)).items || [];
+export const resolveInboxItem = (id,resolution) => write(`/v1/inbox/${enc(id)}/resolve`,{resolution});
+export const getSubscriptions = async () => (await request('/v1/subscriptions')).subscriptions || [];
+export const getRecentChannels = async () => (await request('/v1/channels/recent')).channels || [];
+export const subscribeChannel = (session_id,channel) => write('/v1/subscriptions',{session_id,channel});
+export const unsubscribeChannel = (session_id,channel) => write('/v1/subscriptions/remove',{session_id,channel});
+export const getInboxRouting = async () => (await request('/v1/inbox/routing')).bindings || [];
+export const setInboxBinding = (name,channel,target) => write('/v1/inbox/routing/binding',{name,channel,target});
+export const getDmRoute = async () => (await request('/v1/messaging/dm-route')).dm_session || '';
+export const setDmRoute = session_id => write('/v1/messaging/dm-route',{session_id});
+export const getUnrouted = async () => (await request('/v1/unrouted')).items || [];

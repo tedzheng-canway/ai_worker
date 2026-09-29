@@ -1,7 +1,9 @@
 <script setup>
 import { t } from '../i18n';
 import { ref,onMounted,onBeforeUnmount,watch } from 'vue';
-import { checked,getSessionConnections,setSessionConnection,getUnattended,setUnattended,getSubscriptions,subscribeChannel,unsubscribeChannel } from '../p2api';
+import { checked } from '../api-result.js';
+import { getSessionConnections, setSessionConnection, getUnattended, setUnattended } from '../session-integrations-api.js';
+import { getSubscriptions, subscribeChannel, unsubscribeChannel } from '../inbox-api.js';
 import ChannelPicker from './ChannelPicker.vue';
 const props=defineProps({sessionId:String,persona:String});const emit=defineEmits(['change','open-connectors']);
 const connections=ref({connected:[],recommended:[]}),unattended=ref(false),subscriptions=ref([]),channel=ref(''),error=ref(''),busy=ref(false);let timer,disposed=false,version=0;

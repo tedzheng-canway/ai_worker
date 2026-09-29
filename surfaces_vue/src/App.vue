@@ -8,7 +8,7 @@ import { contextUsage, historyUsage, settingsWithDefaults } from "./settings";
 import { ManualRuns } from "./manualRuns";
 import OnboardingView from './components/OnboardingView.vue';
 import { dark, setTheme } from './preferences';
-import { memoryNotice, undoMemory } from './p3';
+import { memoryNotice, undoMemory } from './memory-notices.js';
 import { updateMemory, deleteMemory } from './api';
 const onboarding = ref(false);
 async function finishSetup(){ onboarding.value=false; await reloadConfig(); }
@@ -29,8 +29,9 @@ import SessionSearch from './components/SessionSearch.vue';
 import InboxView from './components/InboxView.vue';
 import InboxCard from './components/InboxCard.vue';
 import TeamChatView from './components/TeamChatView.vue';
-import { getInbox, getUnattended } from './p2api';
-import { inboxMatches } from './p2';
+import { getInbox } from './inbox-api.js';
+import { getUnattended } from './session-integrations-api.js';
+import { inboxMatches } from './inbox-prompts.js';
 import { getAutomations, connectEvents } from './api';
 const unattended=ref(false),sessionInbox=ref([]),inboxCount=ref(0),automationUnread=ref(0),backgroundError=ref('');
 const connectorFocus=ref(''),automationFocus=ref(''),runContext=ref(null),runToast=ref(null),boardItem=ref(null);
@@ -679,7 +680,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="app" :class="{ 'sidebar-hidden': !sidebarOpen }">
-    <OnboardingView v-if="onboarding" @close="onboarding=false" @done="finishSetup" @change="reloadConfig" />
+    <OnboardingView v-if="onboarding" @done="finishSetup" @change="reloadConfig" />
     <aside class="sidebar">
       <header class="brand">
         <img class="logo" :src="appLogo" alt="AIWorker" style="object-fit: contain; background: transparent" />

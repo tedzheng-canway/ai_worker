@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {scheduleForm,schedulePayload,mcpImports,objectJson,parkedPrompt,parkedResolution,splitAddress,inboxMatches} from '../src/p2.js';
+import { scheduleForm, schedulePayload } from '../src/automation-schedule.js';
+import { mcpImports, objectJson, splitAddress } from '../src/config-input.js';
+import { parkedPrompt, parkedResolution, inboxMatches } from '../src/inbox-prompts.js';
 import {automationTemplates,templateInstructions} from '../src/automationTemplates.js';
 import {historyItems} from '../src/history.js';
 

@@ -2,7 +2,9 @@
 import { t } from '../i18n';
 import { ref, watch, onMounted, onBeforeUnmount } from 'vue';
 import { connectConnector } from '../api';
-import { checked, cloudLogin, getCloudStatus, connectManaged, connectMcpBacked } from '../p2api';
+import { checked } from '../api-result.js';
+import { cloudLogin, getCloudStatus } from '../cloud-api.js';
+import { connectManaged, connectMcpBacked } from '../connectors-api.js';
 const props=defineProps({connector:Object}); const emit=defineEmits(['change']);
 const fields=ref({}), cloud=ref(null), busy=ref(false), waiting=ref(''), error=ref(''), access=ref('read');
 let timer, until=0, disposed=false;

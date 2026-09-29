@@ -81,7 +81,7 @@ const request=(state,path,method='POST')=>state.requests.filter(r=>r.path===path
  async function check(name,fn,configure=()=>{}){
    const f=await fixture(browser,base,s=>{setup(s);configure(s);});
    try{await fn(f);await f.close();console.log('PASS '+(++count)+': '+name);}
-   catch(e){await f.page.screenshot({path:path.join(__dirname,'../dist/p2-failure.png'),fullPage:true});throw e;}
+   catch(e){await f.page.screenshot({path:path.join(__dirname,'../dist/integrations-workflows-failure.png'),fullPage:true});throw e;}
  }
  try{
   await check('cloud, managed OAuth, MCP OAuth and manual credentials remain distinct',async({page,state})=>{
@@ -216,13 +216,13 @@ const request=(state,path,method='POST')=>state.requests.filter(r=>r.path===path
     const card=page.locator('.inline-inbox .inbox-card');await expect(card.getByRole('button',{name:'安装',exact:true})).toBeVisible();
     await card.getByRole('button',{name:'安装',exact:true}).click();await expect(card).toHaveCount(0);assert.deepEqual(JSON.parse(request(state,'/v1/inbox/tool1/resolve').body.resolution),{approved:true});
     await navigate(page,'收件箱');await page.getByRole('button',{name:'路由配置'}).click();await expect(page.getByLabel('审批投递频道')).toBeVisible();
-    await page.screenshot({path:path.join(__dirname,'../dist/p2-routing.png'),fullPage:true});
+    await page.screenshot({path:path.join(__dirname,'../dist/integrations-workflows-routing.png'),fullPage:true});
     await page.getByRole('button',{name:/切换石墨外观/}).click();await page.getByTitle('收起侧边栏').click();await page.setViewportSize({width:430,height:820});
     await expect(page.locator('.sidebar')).not.toBeVisible();
     await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
-    await page.screenshot({path:path.join(__dirname,'../dist/p2-narrow.png'),fullPage:true});
+    await page.screenshot({path:path.join(__dirname,'../dist/integrations-workflows-narrow.png'),fullPage:true});
     await page.getByTitle('展开侧边栏').click();await expect(page.locator('.sidebar')).toBeVisible();
   },s=>{s.unattended=true;s.inbox=[{id:'tool1',session_id:'s1',kind:'tool',title:'安装工具',body:'读取 PDF',state:'pending',data:{tool:'pdftotext',installable:true,version:'1.0'}}];});
-  console.log(count+' P2 browser regression scenarios passed.');
+  console.log(count+' Integrations and workflows browser regression scenarios passed.');
  } finally{await browser.close();await new Promise(resolve=>server.close(resolve));}
 })().catch(e=>{console.error(e);process.exitCode=1;});

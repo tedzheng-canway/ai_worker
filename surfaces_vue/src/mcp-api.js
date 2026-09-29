@@ -1,0 +1,10 @@
+import { request } from './api.js';
+import { enc, write } from './api-request.js';
+export const getMcpTools = name => request(`/v1/mcp/${enc(name)}/tools`);
+export const getMcpTrust = name => request(`/v1/mcp/${enc(name)}/trust`);
+export const revokeMcpTrust = (name,tool) => request(`/v1/mcp/${enc(name)}/trust/${enc(tool)}`,{method:'DELETE'});
+export const convertMcpTrust = name => write(`/v1/mcp/${enc(name)}/trust/convert`);
+export const connectMcp = name => write(`/v1/mcp/${enc(name)}/connect`);
+export const signoutMcp = name => write(`/v1/mcp/${enc(name)}/signout`);
+export const reloadMcp = () => write('/v1/mcp/reload');
+export const revealMcpConfig = () => write('/v1/mcp/config/reveal');

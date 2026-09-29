@@ -1,8 +1,9 @@
 <script setup>
 import { t } from '../i18n';
 import { computed, ref, watch } from 'vue';
-import { checked, accountAction, allowUser, disallowUser, slackDirectory, slackOwner, connectorAction, resolveUnauthorized, getConnectorStatus } from '../p2api';
-import { lines } from '../p2';
+import { checked } from '../api-result.js';
+import { accountAction, allowUser, disallowUser, slackDirectory, slackOwner, connectorAction, resolveUnauthorized, getConnectorStatus } from '../connectors-api.js';
+import { lines } from '../config-input.js';
 const props=defineProps({connector:Object});const emit=defineEmits(['change']);
 const busy=ref(false),error=ref(''),people=ref({}),queries=ref({}),senders=ref(''),labels=ref(''),hidden=ref(''),health=ref(null);
 const groups=computed(()=>{

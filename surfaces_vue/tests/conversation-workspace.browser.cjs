@@ -55,7 +55,7 @@ function setup(state) {
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
  const browser=await chromium.launch({channel:process.env.P0_BROWSER_CHANNEL || 'msedge',headless:true});
  const base=`http://127.0.0.1:${server.address().port}`; let count=0;
- async function check(name,fn,configure=()=>{}) {const f=await fixture(browser,base,state=>{setup(state);configure(state);});try{await fn(f);await f.close();console.log(`PASS ${++count}: ${name}`);}catch(error){await f.page.screenshot({path:path.join(__dirname,'../dist/p1-failure.png'),fullPage:true});throw error;}}
+ async function check(name,fn,configure=()=>{}) {const f=await fixture(browser,base,state=>{setup(state);configure(state);});try{await fn(f);await f.close();console.log(`PASS ${++count}: ${name}`);}catch(error){await f.page.screenshot({path:path.join(__dirname,'../dist/conversation-workspace-failure.png'),fullPage:true});throw error;}}
  const end=(state)=>{state.emit('s1','turn_end',{status:'completed'});state.emit('s1','turn_done');};
  try {
   await check('todo progress updates live with backend done status and restores completed history',async({page,state})=>{
@@ -115,10 +115,10 @@ function setup(state) {
    for(const [name,locator,text] of [['data.csv','.table-scroll','a,b'],['book.xlsx','.table-scroll','Sample'],['notes.txt','.file-text','plain notes']]) {await page.getByRole('button',{name:'返回列表'}).click();await page.locator('.file-row').filter({hasText:name}).click();await expect(page.locator(locator)).toContainText(text);}
    await page.getByRole('button',{name:'返回列表'}).click();await page.locator('.file-row').filter({hasText:'doc.pdf'}).click();await expect(page.locator('.pdf-preview canvas')).toHaveAttribute('width','200');
    await page.getByRole('button',{name:'返回列表'}).click();await page.locator('.file-row').filter({hasText:'image.png'}).click();await expect(page.locator('.artifact-image')).toBeVisible();
-   await page.getByRole('button',{name:'系统打开',exact:true}).click();assert(state.requests.some(r=>r.path.endsWith('/reveal')&&r.body.mode==='open'));
+   await page.getByRole('button',{name:'系统打开',exact:true}).click();await expect.poll(()=>state.requests.some(r=>r.path.endsWith('/reveal')&&r.body.mode==='open')).toBe(true);
    await page.getByRole('button',{name:'返回列表'}).click();await page.getByRole('button',{name:'浏览工作目录'}).click();await page.locator('.file-row').filter({hasText:'notes.txt'}).click();await expect(page.locator('.file-text')).toHaveText('folder notes');
    assert(state.requests.filter(r=>r.path.includes('/artifacts')).every(r=>r.headers['x-openworker-token']==='test-token'));
-   await page.screenshot({path:path.join(__dirname,'../dist/p1-files.png')});
+   await page.screenshot({path:path.join(__dirname,'../dist/conversation-workspace-files.png')});
   });
   await check('attachments: validation, removal, image paste/drop, PDF checks and attachment-only send',async({page,state})=>{
    const input=page.locator('.composer input[type=file]');
@@ -165,10 +165,10 @@ function setup(state) {
   await check('workspace trust, root errors/permissions, project binding and save/reconnect',async({page,state})=>{
    state.emit('s1','ready',{...state.ready,command_trust:{required:true,workspace:'D:/work',requested_commands:['npm test']}});await page.getByRole('button',{name:'信任此工作区',exact:true}).click();await expect.poll(()=>state.trusted.length).toBe(1);
    await page.getByRole('button',{name:'权限与项目',exact:true}).click();state.failRoot=true;await page.getByLabel('额外目录').fill('D:/extra');await page.getByRole('button',{name:'添加目录'}).click();await expect(page.locator('.access-panel [role=alert]')).toContainText('目录不可访问');await expect(page.getByLabel('额外目录')).toHaveValue('D:/extra');
-   await page.screenshot({path:path.join(__dirname,'../dist/p1-access-desktop.png')});
+   await page.screenshot({path:path.join(__dirname,'../dist/conversation-workspace-access-desktop.png')});
    await page.setViewportSize({width:390,height:844});
    assert(await page.locator('.access-panel').evaluate(el=>el.scrollWidth<=el.clientWidth));
-   await page.screenshot({path:path.join(__dirname,'../dist/p1-access-mobile.png')});
+   await page.screenshot({path:path.join(__dirname,'../dist/conversation-workspace-access-mobile.png')});
    await page.setViewportSize({width:1280,height:800});
    state.failRoot=false;await page.getByRole('button',{name:'添加目录'}).click();const root=page.locator('.access-row').filter({hasText:'D:/extra'});await root.locator('input').check();await expect.poll(()=>state.roots.find(r=>r.path==='D:/extra')?.writable).toBe(true);await root.getByRole('button',{name:'移除目录'}).click();await expect(root).toHaveCount(0);
    await page.getByRole('button',{name:'撤销信任'}).click();await expect.poll(()=>state.trusted.length).toBe(0);
@@ -184,8 +184,8 @@ function setup(state) {
   }, state=>{state.personas.push({id:'code',name:'Code',enabled:true,requires_folder:true});});
   await check('auto-approve withholds persistent grants; narrow preview remains usable', async({page,state})=>{
    state.emit('s1','ready',{...state.ready,mode:'auto-approve'});state.emit('s1','permission_required',{name:'mcp__docs__read',arguments:{path:'report'},reason:'needs owner'});await expect(page.locator('.approval-actions button')).toHaveCount(2);await expect(page.getByRole('button',{name:'始终信任此 MCP 工具'})).toHaveCount(0);await page.getByRole('button',{name:'拒绝',exact:true}).click();
-   await page.setViewportSize({width:900,height:760});await page.getByRole('button',{name:'文件',exact:true}).click();await page.locator('.file-row').filter({hasText:'report.md'}).click();await expect(page.locator('.artifact-panel h1')).toHaveText('Report');assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));await page.screenshot({path:path.join(__dirname,'../dist/p1-narrow.png')});await page.getByRole('button',{name:'关闭文件面板'}).click();await expect(page.locator('.composer textarea')).toBeVisible();
+   await page.setViewportSize({width:900,height:760});await page.getByRole('button',{name:'文件',exact:true}).click();await page.locator('.file-row').filter({hasText:'report.md'}).click();await expect(page.locator('.artifact-panel h1')).toHaveText('Report');assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));await page.screenshot({path:path.join(__dirname,'../dist/conversation-workspace-narrow.png')});await page.getByRole('button',{name:'关闭文件面板'}).click();await expect(page.locator('.composer textarea')).toBeVisible();
   });
-  console.log(`${count} P1 browser regression scenarios passed.`);
+  console.log(`${count} Conversation workspace browser regression scenarios passed.`);
  } finally {await browser.close();server.close();}
 })().catch(error=>{console.error(error);server.close();process.exitCode=1;});

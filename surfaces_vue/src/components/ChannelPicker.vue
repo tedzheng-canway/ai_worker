@@ -2,7 +2,9 @@
 import { t } from '../i18n';
 import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue';
 import { getConnectors } from '../api';
-import { getRecentChannels, slackChannels, checked } from '../p2api';
+import { getRecentChannels } from '../inbox-api.js';
+import { slackChannels } from '../connectors-api.js';
+import { checked } from '../api-result.js';
 const props=defineProps({modelValue:String,label:{type:String,default:'频道地址'}});const emit=defineEmits(['update:modelValue']);
 const recent=ref([]),teams=ref([]),hits=ref([]),error=ref(''),open=ref(false);let timer,version=0;
 const options=computed(()=>[...recent.value.map(c=>({address:c.channel,name:c.name || c.channel})),...hits.value].filter((c,i,all)=>all.findIndex(x=>x.address===c.address)===i).filter(c=>!props.modelValue || `${c.name} ${c.address}`.toLowerCase().includes(props.modelValue.replace(/^#/,'').toLowerCase())).slice(0,15));

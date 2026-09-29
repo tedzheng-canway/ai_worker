@@ -1,7 +1,8 @@
 <script setup>
 import { t } from '../i18n';
 import { ref,watch,onMounted,onBeforeUnmount,nextTick } from 'vue';
-import { checked,getTeamChat,postTeamChat } from '../p2api';
+import { checked } from '../api-result.js';
+import { getTeamChat, postTeamChat } from '../team-chat-api.js';
 const props=defineProps({teamId:String});const emit=defineEmits(['close']);
 const chat=ref(null),draft=ref(''),error=ref(''),busy=ref(false),scroller=ref(null),bottom=ref(true);let timer,disposed=false,version=0;
 async function load(){const id=++version;try{const result=checked(await getTeamChat(props.teamId));if(id!==version)return;chat.value=result;if(bottom.value)nextTick(()=>{if(scroller.value)scroller.value.scrollTop=scroller.value.scrollHeight;});}catch(e){if(id===version)error.value=e.message;}}

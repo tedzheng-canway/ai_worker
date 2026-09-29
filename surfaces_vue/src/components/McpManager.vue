@@ -2,9 +2,10 @@
 import { t } from '../i18n';
 import { ref, onMounted, onBeforeUnmount, computed } from 'vue';
 import { addMcpServer, getMcpServers, updateMcpServer, deleteMcpServer } from '../api';
-import { checked, getMcpTools, getMcpTrust, revokeMcpTrust, convertMcpTrust, connectMcp, signoutMcp, reloadMcp, revealMcpConfig } from '../p2api';
+import { checked } from '../api-result.js';
+import { getMcpTools, getMcpTrust, revokeMcpTrust, convertMcpTrust, connectMcp, signoutMcp, reloadMcp, revealMcpConfig } from '../mcp-api.js';
 import { mcpConfig } from '../settings';
-import { objectJson, mcpImports } from '../p2';
+import { objectJson, mcpImports } from '../config-input.js';
 const servers=ref([]),show=ref(false),error=ref(''),busy=ref(false),selection=ref(''),tools=ref([]),trust=ref(null),included=ref([]),importText=ref(''),importMode=ref(false);
 const empty=()=>({name:'',transport:'stdio',command:'',args:'',url:'',env:'{}',headers:'{}',cwd:'',auth:''});const form=ref(empty());
 const server=computed(()=>servers.value.find(s=>s.name===selection.value));let timer,disposed=false,loadId=0;

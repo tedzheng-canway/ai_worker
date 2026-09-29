@@ -1,0 +1,13 @@
+import { request } from './api.js';
+import { enc, write } from './api-request.js';
+export const connectorAction = (name, action, body = {}, method = 'POST') => write(`/v1/connectors/${enc(name)}/${action}`, body, method);
+export const connectManaged = (name, access) => connectorAction(name, 'connect-managed', access ? { access } : {});
+export const connectMcpBacked = (name) => connectorAction(name, 'mcp-connect');
+export const accountAction = (name, collection, id, action) => connectorAction(name, `${collection}/${enc(id)}/${action}`);
+export const getConnectorStatus = (name) => request(`/v1/connectors/${enc(name)}/status`);
+export const allowUser = (name, user_id, team_id, displayName) => connectorAction(name, 'allow', { user_id, ...(team_id ? {team_id} : {}), ...(displayName ? {name:displayName}: {}) });
+export const disallowUser = (name, user_id, team_id) => connectorAction(name, 'disallow', { user_id, ...(team_id ? {team_id} : {}) });
+export const resolveUnauthorized = (name,id,action) => connectorAction(name, `unauthorized/${enc(id)}`, {action});
+export const slackDirectory = (team, q='') => request(`/v1/connectors/slack/workspaces/${enc(team)}/directory?${new URLSearchParams({q})}`);
+export const slackChannels = (team, q='') => request(`/v1/connectors/slack/workspaces/${enc(team)}/channels?${new URLSearchParams({q})}`);
+export const slackOwner = (user_id, action, name) => connectorAction('slack', `approval-owners/${action}`, {user_id,...(name ? {name}: {})});

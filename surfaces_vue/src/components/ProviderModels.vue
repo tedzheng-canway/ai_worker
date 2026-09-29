@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue';
 import { t } from '../i18n';
 import { addModel, removeModel, setDefaultModel } from '../api';
-import { checked } from '../p2api';
+import { checked } from '../api-result.js';
 const props = defineProps({ settings: Object, providers: Array, provider: Object, busy: Boolean });
 const emit = defineEmits(['change', 'error']);
 const draft=ref(''), family=ref(''), saving=ref(false);

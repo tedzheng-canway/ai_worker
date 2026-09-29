@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
-import { memoryNotice, undoMemory, personaConnections, providerDefaults, providerPayload } from '../src/p3.js';
+import { memoryNotice, undoMemory } from '../src/memory-notices.js';
+import { personaConnections } from '../src/persona-connections.js';
+import { providerDefaults, providerPayload } from '../src/provider-fields.js';
 test('memory undo deletes additions (server previous: empty string) and restores edits', async () => {
   const calls = [], api = { deleteMemory: id => calls.push(['delete',id]), updateMemory: (id,content) => calls.push(['update',id,content]) };
   await undoMemory(memoryNotice({id:1,content:'new',previous:''}),api);

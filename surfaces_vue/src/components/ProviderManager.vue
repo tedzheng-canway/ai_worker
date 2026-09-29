@@ -2,9 +2,9 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { t } from '../i18n';
 import { getProviders, getSettings, removeProvider, setProvider } from '../api';
-import { providerAuthStatus, providerSignin, providerSignout, verifyProvider } from '../p3api';
-import { checked } from '../p2api';
-import { providerDefaults, providerPayload, visibleProviderFields } from '../p3';
+import { providerAuthStatus, providerSignin, providerSignout, verifyProvider } from '../providers-api.js';
+import { checked } from '../api-result.js';
+import { providerDefaults, providerPayload, visibleProviderFields } from '../provider-fields.js';
 import { KEY_HELP, providerRank } from '../providers/catalog';
 import ProviderMark from './ProviderMark.vue';
 import ProviderField from './ProviderField.vue';
