@@ -45,6 +45,7 @@ export const createAutomation = (payload) => request("/v1/automations", json("PO
 export const updateAutomation = (id, payload) => request(`/v1/automations/${encodeURIComponent(id)}`, json("PATCH", payload));
 export const deleteAutomation = (id) => request(`/v1/automations/${encodeURIComponent(id)}`, { method: "DELETE" });
 export const runAutomation = (id) => request(`/v1/automations/${encodeURIComponent(id)}/run`, { method: "POST" });
+export const finalizeAutomationRun = (taskId, runId) => request(`/v1/automations/${encodeURIComponent(taskId)}/runs/${encodeURIComponent(runId)}/finalize`, { method: "POST" });
 export const markAutomationSeen = (id) => request(`/v1/automations/${encodeURIComponent(id)}/seen`, { method: "POST" });
 
 export const getConnectors = async () => (await request("/v1/connectors")).connectors || [];
