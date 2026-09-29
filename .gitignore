@@ -13,3 +13,6 @@ node_modules/
 .claude/settings.local.json
 coworker/.idea/
 surfaces/gui/.idea/
+surfaces/
+待办.md
+框架解读-工具与会话流程.md

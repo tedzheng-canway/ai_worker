@@ -179,13 +179,13 @@ if (require.main === module) (async () => {
     await check('model removal/default and persona changes reach the composer', async ({ page, state }) => {
       await page.locator('.surface-nav').getByRole('button', { name: '设置' }).click();
       await page.locator('.subnav').getByRole('button', { name: '模型', exact: true }).click();
-      await page.locator('.model-row').filter({ hasText: 'test:two' }).locator('input').check();
+      await page.locator('.provider-model-row').filter({ hasText: 'test:two' }).getByRole('button', { name: '设为默认' }).click();
       await expect.poll(() => state.settings.model).toBe('test:two');
       await page.locator('.new-button').click();
       await expect(page.getByRole('button', { name: '选择模型' })).toContainText('two');
       await page.locator('.surface-nav').getByRole('button', { name: '设置' }).click();
       await page.locator('.subnav').getByRole('button', { name: '模型', exact: true }).click();
-      await page.locator('.model-row').filter({ hasText: 'test:one' }).getByRole('button', { name: '移除' }).click();
+      await page.locator('.provider-model-row').filter({ hasText: 'test:one' }).getByRole('checkbox').uncheck();
       await expect.poll(() => state.settings.models).toEqual(['test:two']);
       await page.locator('.subnav').getByRole('button', { name: '智能体', exact: true }).click();
       await page.locator('.list-card').filter({ hasText: 'Chat' }).locator('input').uncheck();

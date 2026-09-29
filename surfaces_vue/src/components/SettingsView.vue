@@ -98,7 +98,7 @@ onBeforeUnmount(() => { clearTimeout(flashTimer); window.removeEventListener('oc
       </template>
 
       <template v-else-if="tab === 'models'">
-        <div class="page-head"><div><h1>{{ t("模型与提供商") }}</h1><p>{{ t("配置凭据，并管理会话可选择的模型。") }}</p></div></div>
+        <div class="page-head"><div><h1>{{ t("模型") }}</h1><p>{{ t("连接你的 AI 提供商，配置凭据和模型。") }}</p></div></div>
         <ProviderManager @change="emit('settings-change')" />
       </template>
 
