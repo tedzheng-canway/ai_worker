@@ -88,8 +88,11 @@ async function fixture(browser, base, configure) {
   });
   state.emit = (id, type, data = {}) => state.sockets.get(id).send(JSON.stringify({ type, data }));
   await page.goto(base);
-  await expect(page.locator('.session-row')).toHaveCount(2);
-  await expect.poll(() => state.sockets.has(state.sessions[0].session_id)).toBe(true);
+  if (state.waitForStartup) await state.waitForStartup(page);
+  else {
+    await expect(page.locator('.session-row')).toHaveCount(2);
+    await expect.poll(() => state.sockets.has(state.sessions[0].session_id)).toBe(true);
+  }
   return { page, state, close: async () => { assert.deepEqual(errors, []); await context.close(); } };
 }
 

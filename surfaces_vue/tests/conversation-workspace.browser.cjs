@@ -16,6 +16,8 @@ function setup(state) {
   state.sessionMutes = new Set(); state.roots = [{path:'D:/work',writable:true,primary:true,exists:true}]; state.trusted=[];
   state.binding={memory:null,board:null}; state.named={memory:[{name:'知识库',key:'memory-key'}],board:[{name:'运营',key:'board-key'}]};
   state.pdfPages=1; state.failRoot=false;
+  state.recentWorkspaces=[{path:'D:/project',name:'project',exists:true},{path:'D:/missing',name:'missing',exists:false}];
+  state.pickedFolder='D:/chosen';state.failWorkspace=false;state.failTemp=false;
   const book=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(book,XLSX.utils.aoa_to_sheet([['Name','Amount'],['Sample',42]]),'Report');
   state.files = {
     'report.md':{kind:'markdown',content:'# Report\n\n[网页](artifact:report.html)'},
@@ -41,7 +43,10 @@ function setup(state) {
     if(p.endsWith('/roots')) {if(method==='POST') {if(state.failRoot)return {ok:false,error:'目录不可访问'};const found=state.roots.find(r=>r.path===body.path);if(found)found.writable=body.writable;else state.roots.push({...body,primary:false,exists:true});} if(method==='DELETE')state.roots=state.roots.filter(r=>r.path!==url.searchParams.get('path'));return {ok:true,roots:state.roots};}
     if(p==='/v1/workspaces/trusted')return {workspaces:state.trusted};
     if(p==='/v1/workspaces/trust'){state.trusted=state.trusted.filter(r=>r.workspace!==body.path);if(body.trusted)state.trusted.push({workspace:body.path,requested_commands:['npm test'],trusted:true});return {ok:true};}
-    if(p==='/v1/workspaces/temp')return {ok:true,path:'D:/scratch'};
+    if(p==='/v1/workspaces/recent')return {workspaces:state.recentWorkspaces};
+    if(p==='/v1/workspaces/pick')return {ok:true,path:state.pickedFolder};
+    if(p==='/v1/workspaces/open')return state.failWorkspace ? {ok:false,error:'目录不可访问'} : {ok:true,path:body.path};
+    if(p==='/v1/workspaces/temp')return state.tempResult || (state.failTemp ? {ok:false,error:'临时目录创建失败'} : {ok:true,path:'D:/scratch'});
     if(p.endsWith('/save-as-project')){state.ready.workspace=body.path;state.ready.temp_workspace=false;return {ok:true,path:body.path};}
     if(p.endsWith('/project-menu')){const kind=url.searchParams.get('kind');return {kind,bound:state.binding[kind],derived:{key:'derived',label:'work',kind:'folder'},named:state.named[kind]};}
     if(p.endsWith('/bindings')){state.binding[body.kind]=body.name;return {ok:true};}
@@ -175,13 +180,61 @@ function setup(state) {
    const board=page.locator('.project-binding').filter({hasText:'项目看板'});await board.locator('select').selectOption('运营');await expect.poll(()=>state.binding.board).toBe('运营');await board.getByRole('button',{name:'查看当前项目看板'}).click();await expect(page.locator('.board-item')).toContainText('运营项目任务');
    await page.locator('.session-row').first().click();await page.getByRole('button',{name:'权限与项目',exact:true}).click();await page.getByLabel('项目保存路径').fill('D:/saved');await page.getByRole('button',{name:'保存为项目',exact:true}).click();await expect(page.locator('.title-block')).toContainText('D:/saved');await expect.poll(()=>state.requests.some(r=>r.path.endsWith('/save-as-project')&&r.body.path==='D:/saved')).toBe(true);await expect(page.getByRole('button',{name:'保存为项目',exact:true})).toHaveCount(0);
   });
-  await check('folder gate preserves attachments/skill on cancel and sends once after provisioning', async({page,state})=>{
+  await check('workspace setup precedes sending and preserves drafts through cancellation and temp failures', async({page,state})=>{
    await page.getByRole('button',{name:'选择智能体'}).click();await page.getByRole('option').filter({hasText:'Code'}).click();
+   await expect(page.getByRole('dialog',{name:'Code 要在哪里工作？'})).toBeVisible();
+   assert([...state.sockets.values()].every(ws=>new URL(ws.url()).searchParams.get('agent')!=='code'));assert.equal(state.sent.filter(r=>r.type==='user_message').length,0);
+   await page.keyboard.press('Escape');await expect(page.locator('.folder-dialog')).toHaveCount(0);
    await page.locator('.composer input[type=file]').setInputFiles({name:'draft.txt',mimeType:'text/plain',buffer:Buffer.from('keep me')});
-   await page.locator('.composer textarea').fill('/rep');await page.locator('.slash-menu').getByRole('option').filter({hasText:'/report'}).click();await page.locator('.composer textarea').fill('process attachment');await page.getByRole('button',{name:'发送',exact:true}).click();await expect(page.locator('.folder-dialog')).toBeVisible();await page.keyboard.press('Escape');
+   await page.locator('.composer textarea').fill('/rep');await page.locator('.slash-menu').getByRole('option').filter({hasText:'/report'}).click();await page.locator('.composer textarea').fill('process attachment');
+   await expect(page.getByRole('button',{name:'发送',exact:true})).toBeDisabled();await page.locator('.composer textarea').press('Enter');await expect(page.locator('.folder-dialog')).toHaveCount(0);
+   await page.getByRole('button',{name:'选择工作目录',exact:true}).click();await page.locator('.folder-dialog').getByRole('button',{name:'取消',exact:true}).click();
    await expect(page.locator('.composer textarea')).toHaveValue('process attachment');await expect(page.locator('.skill-chip')).toContainText('report');await expect(page.locator('.composer .attachment')).toContainText('draft.txt');assert.equal(state.sent.filter(r=>r.type==='user_message').length,0);
-   await page.getByRole('button',{name:'发送',exact:true}).click();await page.getByRole('button',{name:'使用临时文件夹'}).click();await expect.poll(()=>state.sent.filter(r=>r.type==='user_message').length).toBe(1);const sent=state.sent.find(r=>r.type==='user_message');assert.equal(sent.skill,'report');assert.equal(sent.attachments[0].text,'keep me');assert.equal(sent.text,'process attachment');await expect(page.locator('.message.user')).toHaveCount(1);
+   // A slow skill response from before the folder pick must not clear the draft's skill.
+   const previousRoute=state.extraRoute;let resolveOldSkills;
+   state.extraRoute=(url,body,req)=>url.pathname.endsWith('/skills')&&url.pathname!=='/v1/skills'&&req.method()==='GET'&&!url.searchParams.get('workspace')&&!resolveOldSkills?new Promise(resolve=>resolveOldSkills=resolve):previousRoute(url,body,req);
+   await page.getByRole('button',{name:'权限与项目',exact:true}).click();await expect.poll(()=>typeof resolveOldSkills).toBe('function');await page.getByRole('button',{name:'关闭权限面板',exact:true}).click();
+   state.failTemp=true;await page.getByRole('button',{name:'选择工作目录',exact:true}).click();await page.getByRole('button',{name:'使用临时文件夹'}).click();await expect(page.locator('.folder-error')).toContainText('临时目录创建失败');
+   let resolveTemp;state.tempResult=new Promise(resolve=>resolveTemp=resolve);
+   await page.getByRole('button',{name:'使用临时文件夹'}).click();await expect(page.getByRole('button',{name:'使用临时文件夹'})).toBeDisabled();await page.keyboard.press('Escape');await expect(page.locator('.folder-dialog')).toBeVisible();
+   resolveTemp({ok:true,path:'D:/scratch'});await expect(page.locator('.folder-dialog')).toHaveCount(0);await expect(page.getByRole('button',{name:'发送',exact:true})).toBeEnabled();
+   assert.equal(state.requests.filter(r=>r.path==='/v1/workspaces/temp').length,2);assert.equal(state.sent.filter(r=>r.type==='user_message').length,0);
+   await expect(page.locator('.workspace-chip')).toContainText('临时工作目录');await expect(page.locator('.composer textarea')).toHaveValue('process attachment');await expect(page.locator('.skill-chip')).toContainText('report');await expect(page.locator('.composer .attachment')).toContainText('draft.txt');
+   const provision=state.requests.filter(r=>r.path==='/v1/workspaces/temp').at(-1),socket=state.sockets.get(provision.body.session_id);assert(socket);assert.equal(new URL(socket.url()).searchParams.get('workspace'),'D:/scratch');assert.equal(provision.body.git,true);
+   const staleResponse=page.waitForResponse(response=>{const url=new URL(response.url());return url.pathname.endsWith('/skills')&&!url.searchParams.get('workspace');});resolveOldSkills({ok:true,skills:[]});await (await staleResponse).finished();
+   await page.getByRole('button',{name:'发送',exact:true}).click();await expect.poll(()=>state.sent.filter(r=>r.type==='user_message').length).toBe(1);const sent=state.sent.find(r=>r.type==='user_message');assert.equal(sent.skill,'report');assert.equal(sent.attachments[0].text,'keep me');assert.equal(sent.text,'process attachment');await expect(page.locator('.message.user')).toHaveCount(1);await expect(page.locator('.session-setup')).toHaveCount(0);
+   await page.locator('.new-button').click();await expect(page.locator('.folder-dialog')).toBeVisible();await expect(page.locator('.workspace-chip')).toContainText('选择工作目录');
   }, state=>{state.personas.push({id:'code',name:'Code',enabled:true,requires_folder:true});});
+  await check('recent/manual/native folder choices preserve drafts and rebind before explicit send',async({page,state})=>{
+   await page.getByRole('button',{name:'选择智能体'}).click();await page.getByRole('option').filter({hasText:'Code'}).click();await expect(page.locator('.recent-folder')).toHaveCount(1);await page.keyboard.press('Escape');
+   const editor=page.locator('.composer textarea');await editor.fill('inspect project');await page.locator('.composer input[type=file]').setInputFiles({name:'draft.txt',mimeType:'text/plain',buffer:Buffer.from('keep me')});
+   await page.getByRole('button',{name:'选择工作目录',exact:true}).click();state.failWorkspace=true;
+   const pathInput=page.getByPlaceholder('也可以输入绝对路径');await pathInput.fill('  D:/project  ');await pathInput.press('Enter');await expect(page.locator('.folder-error')).toContainText('目录不可访问');await expect(pathInput).toHaveValue('  D:/project  ');assert([...state.sockets.values()].every(ws=>new URL(ws.url()).searchParams.get('agent')!=='code'));
+   state.failWorkspace=false;state.ready={temp_workspace:false};await page.locator('.recent-folder').click();await expect(page.locator('.folder-dialog')).toHaveCount(0);await expect(page.getByRole('button',{name:'发送',exact:true})).toBeEnabled();await expect(page.locator('.workspace-chip')).toHaveAttribute('title','D:/project');
+   const firstId=[...state.sockets.keys()].at(-1);assert.equal(new URL(state.sockets.get(firstId).url()).searchParams.get('workspace'),'D:/project');assert.equal(state.sent.filter(r=>r.type==='user_message').length,0);
+   // A connected draft cannot change the server's existing workspace in place.
+   await page.getByRole('button',{name:'选择工作目录',exact:true}).click();state.pickedFolder=null;await page.getByRole('button',{name:'选择文件夹',exact:true}).click();await expect(page.getByRole('button',{name:'选择文件夹',exact:true})).toBeEnabled();await expect(page.locator('.folder-dialog')).toBeVisible();
+   state.pickedFolder='D:/chosen';await page.getByRole('button',{name:'选择文件夹',exact:true}).click();await expect(page.locator('.workspace-chip')).toHaveAttribute('title','D:/chosen');await expect(page.getByRole('button',{name:'发送',exact:true})).toBeEnabled();
+   const secondId=[...state.sockets.keys()].at(-1);assert.notEqual(secondId,firstId);assert.equal(new URL(state.sockets.get(secondId).url()).searchParams.get('workspace'),'D:/chosen');await expect(editor).toHaveValue('inspect project');await expect(page.locator('.composer .attachment')).toContainText('draft.txt');assert.equal(state.sent.filter(r=>r.type==='user_message').length,0);
+   await page.getByRole('button',{name:'选择工作目录',exact:true}).click();await pathInput.fill('  D:/manual  ');await pathInput.press('Enter');await expect(page.locator('.workspace-chip')).toHaveAttribute('title','D:/manual');await expect(page.getByRole('button',{name:'发送',exact:true})).toBeEnabled();assert.equal(state.requests.filter(r=>r.path==='/v1/workspaces/open').at(-1).body.path,'D:/manual');
+   await page.setViewportSize({width:560,height:760});await page.getByTitle('收起侧边栏').click();assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));await page.screenshot({path:path.join(__dirname,'../dist/conversation-workspace-setup.png')});
+   await page.getByRole('button',{name:'发送',exact:true}).click();await expect.poll(()=>state.sent.filter(r=>r.type==='user_message').length).toBe(1);assert.equal(state.sent.find(r=>r.type==='user_message').text,'inspect project');
+   await page.getByTitle('新对话',{exact:true}).click();await expect(page.locator('.folder-dialog')).toHaveCount(0);await expect(page.locator('.workspace-chip')).toHaveAttribute('title','D:/manual');
+  },state=>{state.personas.push({id:'code',name:'Code',enabled:true,requires_folder:true});});
+  await check('workspace gating follows persona metadata without inheriting another persona scratch',async({page,state})=>{
+   await expect(page.locator('.session-setup')).toHaveCount(0);await expect(page.locator('.folder-dialog')).toHaveCount(0);
+   await page.getByRole('button',{name:'选择智能体'}).click();await page.getByRole('option').filter({hasText:'Ops'}).click();await expect(page.getByRole('dialog',{name:'Ops 要在哪里工作？'})).toBeVisible();await expect(page.locator('.workspace-chip')).toContainText('选择工作目录');await page.keyboard.press('Escape');
+   await page.getByRole('button',{name:'选择智能体'}).click();await page.getByRole('option').filter({hasText:'Code'}).click();await expect(page.locator('.folder-dialog')).toHaveCount(0);await expect(page.locator('.session-setup')).toHaveCount(0);await page.locator('.composer textarea').fill('hello');await expect(page.getByRole('button',{name:'发送',exact:true})).toBeEnabled();
+   await page.getByRole('button',{name:'发送',exact:true}).click();await expect.poll(()=>state.sent.filter(r=>r.type==='user_message').length).toBe(1);
+  },state=>{state.personas.push({id:'ops',name:'Ops',enabled:true,requires_folder:true},{id:'code',name:'Code',enabled:true,requires_folder:false});});
+  await check('first launch with a folder-scoped default prompts before any session connection',async({page,state})=>{
+   await expect(page.getByRole('dialog',{name:'Code 要在哪里工作？'})).toBeVisible();assert([...state.sockets.values()].every(ws=>!new URL(ws.url()).pathname.startsWith('/ws/session/')));await page.keyboard.press('Escape');await page.locator('.composer textarea').fill('first task');await expect(page.getByRole('button',{name:'发送',exact:true})).toBeDisabled();
+   await page.getByRole('button',{name:'选择工作目录',exact:true}).click();await page.locator('.recent-folder').click();await expect(page.getByRole('button',{name:'发送',exact:true})).toBeEnabled();assert.equal(state.sent.filter(r=>r.type==='user_message').length,0);
+  },state=>{state.sessions=[];state.personas.push({id:'code',name:'Code',default:true,enabled:true,requires_folder:true});state.ready={temp_workspace:false};state.waitForStartup=page=>expect(page.locator('.folder-dialog')).toBeVisible();});
+  await check('first launch adopts the server seeded workspace for a folder-scoped default',async({page,state})=>{
+   await expect(page.locator('.folder-dialog')).toHaveCount(0);await expect(page.locator('.workspace-chip')).toHaveAttribute('title','D:/seed');await page.locator('.composer textarea').fill('first task');await expect(page.getByRole('button',{name:'发送',exact:true})).toBeEnabled();assert.equal(state.sent.filter(r=>r.type==='user_message').length,0);
+   const session=[...state.sockets.values()].find(ws=>new URL(ws.url()).pathname.startsWith('/ws/session/'));assert(session);assert.equal(new URL(session.url()).searchParams.get('workspace'),'D:/seed');
+  },state=>{state.sessions=[];state.personas.push({id:'code',name:'Code',default:true,enabled:true,requires_folder:true});state.ready={temp_workspace:false};const route=state.extraRoute;state.extraRoute=(url,body,req)=>url.pathname==='/v1/health'?{model:state.settings.model,default_workspace:'D:/seed'}:route(url,body,req);state.waitForStartup=page=>expect(page.locator('.workspace-chip')).toHaveAttribute('title','D:/seed');});
   await check('auto-approve withholds persistent grants; narrow preview remains usable', async({page,state})=>{
    state.emit('s1','ready',{...state.ready,mode:'auto-approve'});state.emit('s1','permission_required',{name:'mcp__docs__read',arguments:{path:'report'},reason:'needs owner'});await expect(page.locator('.approval-actions button')).toHaveCount(2);await expect(page.getByRole('button',{name:'始终信任此 MCP 工具'})).toHaveCount(0);await page.getByRole('button',{name:'拒绝',exact:true}).click();
    await page.setViewportSize({width:900,height:760});await page.getByRole('button',{name:'文件',exact:true}).click();await page.locator('.file-row').filter({hasText:'report.md'}).click();await expect(page.locator('.artifact-panel h1')).toHaveText('Report');assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));await page.screenshot({path:path.join(__dirname,'../dist/conversation-workspace-narrow.png')});await page.getByRole('button',{name:'关闭文件面板'}).click();await expect(page.locator('.composer textarea')).toBeVisible();

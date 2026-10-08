@@ -88,8 +88,9 @@ const manualRunEntries = ref([]);
 const configError = ref("");
 const mode = ref("interactive");
 const draft = ref("");
-const sendGate = ref("");
+const folderDialogOpen = ref(false);
 const folderError = ref("");
+const folderBusy = ref(false);
 const connected = ref(false);
 const sessionReady = ref(false);
 const running = ref(false);
@@ -145,7 +146,13 @@ const title = computed(() => activeSession.value?.title || "新对话");
 const pageTitles = { automations: "自动化", connectors: "连接器", audit: "活动审计", board: "任务看板", settings: "设置", inbox:"收件箱", teamchat:"团队聊天室" };
 const pageTitle = computed(() => surface.value === "session" ? title.value : pageTitles[surface.value]);
 const activePersona = computed(() => personas.value.find((item) => item.id === agent.value));
-const needsWorkspace = computed(() => Boolean((activePersona.value?.requires_folder || agent.value === "code") && !workspace.value));
+function gatesWorkspace(persona) {
+  const metadata = personas.value.find((item) => item.id === persona);
+  return metadata ? metadata.requires_folder === true : persona === "code";
+}
+const requiresWorkspace = computed(() => gatesWorkspace(agent.value));
+const needsWorkspace = computed(() => requiresWorkspace.value && !workspace.value);
+const workspaceName = computed(() => temporary.value ? t("临时工作目录") : workspace.value.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || workspace.value);
 const visiblePersonas = computed(() => {
   const rows = personas.value.filter((item) => item.enabled !== false && item.surfaced !== false);
   return rows.length ? rows : [{ id: "cowork", name: "Coworker" }, { id: "chat", name: "Chat" }, { id: "code", name: "Code", requires_folder: true }];
@@ -276,9 +283,10 @@ function flushPartial() {
   streaming.value = ''; streamReasoning.value = '';
 }
 async function loadSkills() {
-  const id = sessionId.value;
-  try { const rows = await sessionSkills(id, workspace.value); if (id === sessionId.value) { skills.value = rows; if (chosenSkill.value && !rows.some(s => s.name === chosenSkill.value && s.enabled)) chosenSkill.value = ''; } }
-  catch (error) { if (id === sessionId.value) attachmentError.value = `技能列表加载失败：${error.message}`; }
+  const id = sessionId.value, folder = workspace.value;
+  const current = () => id === sessionId.value && folder === workspace.value;
+  try { const rows = await sessionSkills(id, folder); if (current()) { skills.value = rows; if (chosenSkill.value && !rows.some(s => s.name === chosenSkill.value && s.enabled)) chosenSkill.value = ''; } }
+  catch (error) { if (current()) attachmentError.value = `技能列表加载失败：${error.message}`; }
 }
 async function addFiles(files) {
   const id = sessionId.value; attachmentLoads++; attaching.value = true; attachmentError.value = '';
@@ -307,7 +315,7 @@ async function changeLayout(value) { await sessionAction(() => setNavLayout(valu
 function allowAnyway(item) { if (running.value || !connected.value) return; socket.allowAnyway(item.name, item.args); item.overridden = true; transmit({ text: `请重试 ${item.name}，我已允许这一次完全相同的操作。`, attachments: [] }); }
 async function trustWorkspace() { trustSaving.value = true; trustError.value = ''; try { requireSuccess(await setWorkspaceTrusted(trustRequest.value.workspace, true)); trustRequest.value = null; } catch (error) { trustError.value = error.message; } finally { trustSaving.value = false; } }
 function savedProject(path) { if (!path) return; workspace.value = path; temporary.value = false; socket?.close(); connections.delete(sessionId.value); connect(); artifactVersion.value++; refreshSessions(); }
-function resetSessionUi() { backgroundVersion++; sessionInbox.value=[]; unattended.value=false; runContext.value=null; boardItem.value=null; attachments.value = []; draft.value = ''; chosenSkill.value = ''; skills.value = []; streamReasoning.value = ''; totals.value = {}; todos.value = []; trustRequest.value = null; temporary.value = false; attachmentError.value = ''; artifactPath.value = ''; compacting.value = false; atBottom.value = true; }
+function resetSessionUi() { backgroundVersion++; folderDialogOpen.value = false; folderError.value = ''; folderBusy.value = false; sessionInbox.value=[]; unattended.value=false; runContext.value=null; boardItem.value=null; attachments.value = []; draft.value = ''; chosenSkill.value = ''; skills.value = []; streamReasoning.value = ''; totals.value = {}; todos.value = []; trustRequest.value = null; temporary.value = false; attachmentError.value = ''; artifactPath.value = ''; compacting.value = false; atBottom.value = true; }
 
 function releaseInactiveConnections() {
   for (const [id, connection] of connections) {
@@ -378,7 +386,8 @@ function connect() {
   connected.value = false;
   sessionReady.value = false;
   if (needsWorkspace.value) {
-    status.value = "发送任务时请选择工作目录";
+    status.value = "请选择工作目录";
+    showWorkspacePicker();
     return;
   }
   status.value = "正在连接…";
@@ -457,21 +466,21 @@ async function selectSession(item) {
   connect();
 }
 
-function newSession(persona = personas.value.find(p=>p.default && p.enabled!==false)?.id || agent.value) {
+function newSession(persona = personas.value.find(p=>p.default && p.enabled!==false)?.id || agent.value, initialWorkspace = "") {
+  const target = visiblePersonas.value.some((p) => p.id === persona) ? persona : visiblePersonas.value[0]?.id || "cowork";
+  const folder = gatesWorkspace(target) ? initialWorkspace || (target === agent.value && !temporary.value ? workspace.value : "") : "";
   resetSessionUi();
   surface.value = "session";
   sessionId.value = newId();
-  agent.value = visiblePersonas.value.some((p) => p.id === persona) ? persona : visiblePersonas.value[0]?.id || "cowork";
+  agent.value = target;
   model.value = config.value.model || config.value.default_model || models.value[0] || model.value;
   if (mode.value === "auto-approve" && !config.value.auto_approve) mode.value = "interactive";
   usage.value = null;
-  workspace.value = "";
+  workspace.value = folder;
   messages.value = [];
   streaming.value = "";
   running.value = false;
   pendingMessage = "";
-  sendGate.value = "";
-  folderError.value = "";
   connect();
 }
 
@@ -522,20 +531,12 @@ async function reloadConfig() {
 
 function send() {
   let text = draft.value.trim();
-  if (!canSend.value || running.value) return;
+  if (!canSend.value || running.value || needsWorkspace.value || !connected.value || !sessionReady.value || !socket) return;
   if (slashOpen.value && slashSkills.value.length) { chooseSkill(slashSkills.value[Math.max(0, skillIndex.value)]); return; }
   let skill = chosenSkill.value || undefined;
   const explicit = text.match(/^\/(\S+)\s+([\s\S]*)$/);
   if (!skill && explicit && skills.value.some(row => row.name === explicit[1] && row.enabled)) { skill = explicit[1]; text = explicit[2].trim(); }
   const packet = { text, attachments: [...attachments.value], skill };
-  if (needsWorkspace.value) {
-    sendGate.value = packet;
-    folderError.value = "";
-    draft.value = "";
-    attachments.value = []; chosenSkill.value = '';
-    return;
-  }
-  if (!connected.value || !socket) return;
   transmit(packet);
   draft.value = "";
   attachments.value = []; chosenSkill.value = '';
@@ -548,34 +549,52 @@ function transmit(packet) {
   scrollBottom();
 }
 
-function resolveSendFolder(path) {
-  if (!sendGate.value) return;
-  workspace.value = path;
-  pendingMessage = sendGate.value;
-  sendGate.value = "";
+function showWorkspacePicker() {
+  if (!requiresWorkspace.value || running.value) return;
   folderError.value = "";
-  connect();
+  folderDialogOpen.value = true;
 }
 
-async function startTempAndSend() {
+function chooseWorkspace(path, isTemporary = false, targetId) {
+  if (!path || running.value) return;
+  folderDialogOpen.value = false;
   folderError.value = "";
+  if (workspace.value === path && temporary.value === isTemporary) return;
+  // A connected draft is already bound on the server. Changing its folder needs
+  // a fresh session, while the text, attachments and selected skill stay in place.
+  const nextId = targetId || (workspace.value && !messages.value.length ? newId() : sessionId.value);
+  socket?.close();
+  connections.delete(sessionId.value);
+  sessionId.value = nextId;
+  workspace.value = path;
+  temporary.value = isTemporary;
+  connect();
+  artifactVersion.value++;
+  refreshSessions();
+}
+
+async function startTempWorkspace() {
+  if (folderBusy.value) return;
+  const id = sessionId.value;
+  const targetId = workspace.value && !messages.value.length ? newId() : id;
+  folderError.value = "";
+  folderBusy.value = true;
   try {
-    const result = await createTempWorkspace(sessionId.value);
+    const result = await createTempWorkspace(targetId);
+    if (id !== sessionId.value || disposed) return;
     if (!result.ok || !result.path) {
       folderError.value = result.error || "无法创建临时工作目录";
       return;
     }
-    resolveSendFolder(result.path);
+    chooseWorkspace(result.path, true, targetId);
   } catch (error) {
-    folderError.value = error?.message || "无法创建临时工作目录";
-  }
+    if (id === sessionId.value && !disposed) folderError.value = error?.message || "无法创建临时工作目录";
+  } finally { if (id === sessionId.value || targetId === sessionId.value) folderBusy.value = false; }
 }
 
-function cancelSendFolder() {
-  draft.value = sendGate.value.text || '';
-  attachments.value = sendGate.value.attachments || [];
-  chosenSkill.value = sendGate.value.skill || '';
-  sendGate.value = "";
+function cancelWorkspacePicker() {
+  if (folderBusy.value) return;
+  folderDialogOpen.value = false;
   folderError.value = "";
 }
 
@@ -655,7 +674,7 @@ onMounted(async () => {
     personas.value = personaRows;
     sessions.value = sessionRows;
     if (sessionRows[0]) await selectSession(sessionRows[0]);
-    else newSession();
+    else newSession(undefined, health.default_workspace || "");
     for (const entry of manualRunEntries.value) {
       if (manualRuns.watching(entry.session_id) && !connections.has(entry.session_id)) openConnection(entry.session_id, entry.workspace, entry.agent);
     }
@@ -816,11 +835,15 @@ onBeforeUnmount(() => {
           <span v-else>{{ usage ? (t("上下文 ") + (usage.tokens.toLocaleString()) + t(" tokens（模型容量未知）")) : t("上下文用量：等待模型返回数据") }}</span>
         </div>
         <p v-if="attachmentError" class="error-text" role="alert">{{ t(attachmentError) }}</p>
+        <div v-if="requiresWorkspace && (needsWorkspace || !messages.length) && !running && !sessionId.startsWith('__run__')" class="session-setup" data-testid="setup-row">
+          <button class="workspace-chip" :class="{ required: needsWorkspace }" :title="workspace || t('选择工作目录')" :aria-label="t('选择工作目录')" @click="showWorkspacePicker"><span aria-hidden="true">▰</span><strong>{{ workspaceName || t("选择工作目录") }}</strong><span aria-hidden="true">⌄</span></button>
+          <small v-if="needsWorkspace">{{ t("先选择工作目录，再发送任务") }}</small>
+        </div>
         <div class="composer" @dragover.prevent @drop="dropFiles">
           <div v-if="attachments.length" class="attachments"><div v-for="(file,i) in attachments" :key="i" class="attachment"><img v-if="file.kind === 'image'" :src="file.data_url" :alt="file.name" /><details v-else-if="file.kind === 'text'"><summary>{{ file.name }}</summary><pre>{{ file.text.slice(0,4000) }}</pre></details><span v-else>{{ file.name }}</span><button type="button" :aria-label="(t(&quot;移除附件 &quot;) + (file.name))" @click="attachments.splice(i,1)">×</button></div></div>
           <div v-if="chosenSkill" class="skill-chip">/{{ chosenSkill }}<button :aria-label="t(&quot;取消技能&quot;)" @click="chosenSkill = ''">×</button></div>
           <div v-if="slashOpen" class="slash-menu" role="listbox" :aria-label="t(&quot;选择技能&quot;)"><button v-for="(skill,i) in slashSkills" :key="skill.name" :class="{active: i === skillIndex}" role="option" :aria-selected="i === skillIndex" @mousedown.prevent @click="chooseSkill(skill)">/{{ skill.name }} <small>{{ skill.description }}</small></button><p v-if="!slashSkills.length">{{ t("没有匹配的已启用技能，按 Esc 可发送普通文字。") }}</p></div>
-          <textarea v-model="draft" :disabled="!connected && !needsWorkspace" rows="1" :placeholder="needsWorkspace ? t(&quot;描述任务，发送时选择工作目录&quot;) : connected ? t(&quot;描述任务，Enter 发送，Shift + Enter 换行&quot;) : t(&quot;等待本地服务连接…&quot;)" @keydown="keydown" @paste="pasteFiles"></textarea>
+          <textarea v-model="draft" :disabled="!connected && !needsWorkspace" rows="1" :placeholder="needsWorkspace ? t(&quot;请先选择上方的工作目录&quot;) : connected ? t(&quot;描述任务，Enter 发送，Shift + Enter 换行&quot;) : t(&quot;等待本地服务连接…&quot;)" @keydown="keydown" @paste="pasteFiles"></textarea>
           <div class="composer-toolbar">
             <div class="selectors">
               <button class="btn" :disabled="attaching" :title="t(&quot;添加附件&quot;)" @click="fileInput.click()">{{ attaching ? t("读取中…") : t("＋ 附件") }}</button><input ref="fileInput" type="file" multiple hidden @change="addFiles($event.target.files); $event.target.value = ''" />
@@ -829,7 +852,7 @@ onBeforeUnmount(() => {
               <SelectMenu v-if="modelOptions.length" class="model-selector" :model-value="model" :options="modelOptions" icon="✦" :label="t(&quot;选择模型&quot;)" wide @change="changeModel" />
             </div>
             <button v-if="running" class="stop-button" :title="t(&quot;停止&quot;)" @click="socket.interrupt()">■</button>
-            <button v-else class="send-button" :disabled="!canSend || (!connected && !needsWorkspace)" :title="t(&quot;发送&quot;)" :aria-label="t(&quot;发送&quot;)" @click="send">↑</button>
+            <button v-else class="send-button" :disabled="!canSend || needsWorkspace || !connected || !sessionReady" :title="t(&quot;发送&quot;)" :aria-label="t(&quot;发送&quot;)" @click="send">↑</button>
           </div>
         </div>
       </footer>
@@ -847,6 +870,6 @@ onBeforeUnmount(() => {
     <SessionSearch v-if="searchOpen" :sessions="sessions" :personas="personas" @close="searchOpen = false" @select="selectSession" />
     <div v-if="renameTarget" class="dialog-overlay" @click.self="renameTarget = null"><form class="search-dialog form-card" role="dialog" :aria-label="t(&quot;重命名对话&quot;)" @submit.prevent="saveRename"><h3>{{ t("重命名对话") }}</h3><input v-model="renameDraft" :aria-label="t(&quot;对话标题&quot;)" required autofocus /><p v-if="actionError" class="error-text">{{ t(actionError) }}</p><div class="actions"><button class="btn primary" :disabled="actionBusy || !renameDraft.trim()">{{ t("保存名称") }}</button><button type="button" class="btn" @click="renameTarget = null">{{ t("取消") }}</button></div></form></div>
     <div v-if="trustRequest" class="dialog-overlay"><section class="search-dialog form-card" role="dialog" :aria-label="t(&quot;工作区命令信任&quot;)"><h3>{{ t("信任工作区声明的命令？") }}</h3><p>{{ trustRequest.workspace }}</p><pre>{{ (trustRequest.requested_commands || []).join('\n') }}</pre><p>{{ t("信任后这些声明的命令可按工作区规则执行。你可以在“权限与项目”中撤销。") }}</p><p v-if="trustError" class="error-text">{{ t(trustError) }}</p><div class="actions"><button class="btn" :disabled="trustSaving" @click="trustRequest = null">{{ t("继续逐次询问") }}</button><button class="btn primary" :disabled="trustSaving" @click="trustWorkspace">{{ t("信任此工作区") }}</button></div></section></div>
-    <FolderDialog v-if="sendGate" :persona-name="activePersona?.name || agent" :external-error="folderError" @pick="resolveSendFolder" @temp="startTempAndSend" @cancel="cancelSendFolder" />
+    <FolderDialog v-if="folderDialogOpen && surface === 'session' && !onboarding" :key="sessionId" :persona-name="activePersona?.name || agent" :external-error="folderError" :external-busy="folderBusy" @pick="chooseWorkspace" @temp="startTempWorkspace" @cancel="cancelWorkspacePicker" />
   </div>
 </template>
