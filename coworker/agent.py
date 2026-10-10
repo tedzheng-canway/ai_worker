@@ -282,7 +282,9 @@ def build_engine(
 
     workspace_trusted = bool(ws and WorkspaceTrustStore().is_trusted(ws))
     config = load_config(ws, workspace_trusted=workspace_trusted)
-    model_settings = dict(model_settings or {})
+    from .model_config import model_settings_for
+
+    model_settings = {**model_settings_for(model), **(model_settings or {})}
     if config.max_output_tokens is not None:
         model_settings.setdefault("max_tokens", config.max_output_tokens)
     if config.reasoning_effort:

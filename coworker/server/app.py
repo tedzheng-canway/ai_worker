@@ -169,6 +169,18 @@ from .manager import SessionManager, _approval_body
 
 
 def create_app(manager: SessionManager) -> FastAPI:
+    from ..providers.openrouter_auth import OpenRouterAuth
+
+    def openrouter_changed() -> None:
+        manager._refresh_provider("openrouter-account")
+        if manager._provider_configured("openrouter-account"):
+            added = "openrouter-account:z-ai/glm-5.2"
+            manager.add_model(added)
+            if not manager._provider_configured(manager._model_provider(manager.model)):
+                manager.set_default_model(added)
+
+    openrouter_auth = OpenRouterAuth(manager.secrets, openrouter_changed)
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         try:
@@ -182,6 +194,7 @@ def create_app(manager: SessionManager) -> FastAPI:
 
             traceback.print_exc()
         yield
+        openrouter_auth.cancel()
         await manager.aclose()  # stop gateway + close MCP connections on shutdown
 
     app = FastAPI(title="coworker", version="0.0.0", lifespan=lifespan)
@@ -213,6 +226,8 @@ def create_app(manager: SessionManager) -> FastAPI:
 
     @app.middleware("http")
     async def require_sidecar_token(request: Request, call_next):
+        if request.url.path.startswith("/v1/providers/openrouter-account/") and not _origin_allowed(request.headers.get("origin")):
+            return JSONResponse({"error": "Origin not allowed"}, status_code=403)
         # Preflights carry the requested header name, not its value. CORS checks the
         # Origin; the actual state-changing request still must authenticate.
         if (
@@ -1861,7 +1876,38 @@ def create_app(manager: SessionManager) -> FastAPI:
 
     @app.delete("/v1/providers/{name}")
     def providers_remove(name: str) -> dict[str, Any]:
+        if name == "openrouter-account":
+            openrouter_auth.cancel()
         return manager.remove_provider(name)
+
+    @app.get("/v1/providers/{name}/local-models")
+    def providers_local_models(name: str) -> dict[str, Any]:
+        manager._refresh_provider(name)
+        return manager.local_model_facts(name)
+
+    @app.get("/v1/system/facts")
+    def system_facts() -> dict[str, Any]:
+        return manager.system_facts()
+
+    @app.get("/v1/providers/openrouter-account/status")
+    async def openrouter_status():
+        return openrouter_auth.status()
+
+    @app.post("/v1/providers/openrouter-account/signin")
+    async def openrouter_signin(body: dict):
+        return await openrouter_auth.start(manual=body.get("manual") is True)
+
+    @app.post("/v1/providers/openrouter-account/complete")
+    async def openrouter_complete(body: dict):
+        return await openrouter_auth.complete(body.get("code"), body.get("attempt_id"))
+
+    @app.post("/v1/providers/openrouter-account/cancel")
+    async def openrouter_cancel():
+        return openrouter_auth.cancel()
+
+    @app.post("/v1/providers/openrouter-account/disconnect")
+    async def openrouter_disconnect():
+        return openrouter_auth.disconnect()
 
     @app.post("/v1/providers/verify")
     async def providers_verify(body: dict) -> dict[str, Any]:
@@ -1909,6 +1955,29 @@ def create_app(manager: SessionManager) -> FastAPI:
     @app.post("/v1/settings/models/remove")
     def settings_models_remove(body: dict) -> dict[str, Any]:
         return manager.remove_model((body or {}).get("model", ""))
+
+    @app.get("/v1/settings/model-config")
+    def settings_model_config(model: str = "") -> dict[str, Any]:
+        return manager.get_model_config(model)
+
+    @app.post("/v1/settings/model-config")
+    def settings_model_config_set(body: dict) -> dict[str, Any]:
+        return manager.set_model_config(body.get("model", ""), body.get("values", {}))
+
+    @app.post("/v1/settings/model-config/remove")
+    def settings_model_config_remove(body: dict) -> dict[str, Any]:
+        return manager.remove_model_config(body.get("model", ""))
+
+    @app.get("/v1/sessions/{session_id}/model-settings")
+    def session_model_settings(session_id: str, model: str = "") -> dict[str, Any]:
+        return manager.session_model_settings(session_id, model)
+
+    @app.post("/v1/sessions/{session_id}/model-settings")
+    async def session_model_settings_set(session_id: str, body: dict) -> dict[str, Any]:
+        result = manager.set_session_model_settings(session_id, body)
+        if result.get("ok"):
+            await manager.broadcast_session(session_id, {"type": "model_settings", "data": result})
+        return result
 
     @app.post("/v1/settings/onboarded")
     def settings_set_onboarded(body: dict) -> dict[str, Any]:
@@ -2404,6 +2473,8 @@ def create_app(manager: SessionManager) -> FastAPI:
             if not model or manager.is_running(session_id):
                 return
             notice = engine.switch_model(model)
+            manager.apply_model_settings(session_id)
+            await manager.broadcast_session(session_id, {"type": "model_settings", "data": manager.session_model_settings(session_id)})
             if notice is None:  # same model, or first bind on a fresh session
                 return
             manager.persist_session(session_id)
@@ -2474,6 +2545,7 @@ def create_app(manager: SessionManager) -> FastAPI:
                     "running": manager.is_running(session_id),
                     "agent": getattr(engine, "agent_name", "code"),
                     "model": engine.model,
+                    "model_settings": manager.session_model_settings(session_id),
                     "mode": engine.permissions.mode.value,
                     "workspace": (
                         str(getattr(engine, "executor").cwd)

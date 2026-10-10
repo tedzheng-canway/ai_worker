@@ -89,6 +89,7 @@ class ProviderDescriptor:
     # "oauth" → no key form at all: the provider is configured by a browser sign-in
     # (tokens in its `provider:<name>` profile) and the GUI renders connect/sign-out
     # instead of fields. None → the usual key/field form.
+    kind: str = "api_key"
     auth: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -100,6 +101,7 @@ class ProviderDescriptor:
             "recommended_model": self.recommended_model,
             "blurb": self.blurb,
             "auth": self.auth,
+            "kind": self.kind,
         }
 
 
@@ -198,8 +200,48 @@ def _build_vertex(profile: dict[str, Any], secrets: Any) -> ProviderClient:
 def _build_ollama(profile: dict[str, Any], secrets: Any) -> ProviderClient:
     # Ollama's OpenAI-compatible endpoint ignores the key but the SDK requires a non-empty
     # string, so we pass a placeholder. `base_url` comes from the stored profile (or the default).
+    # Chat calls are rewritten onto the native API so we can set num_ctx — the /v1 handler
+    # cannot, and its 4,096-token default drops the Cowork prompt (see ollama_context.py).
+    from .ollama_context import ollama_http_client
+
     base_url = _normalize_ollama_url((profile or {}).get("base_url"))
-    return OpenAIProvider(api_key="ollama", base_url=base_url)
+    return OpenAIProvider(api_key="ollama", base_url=base_url, http_client=ollama_http_client())
+
+
+
+
+def _local_server(name: str):
+    """Builder for llama.cpp and vLLM (providers/local_server.py): the user's own server,
+    reached through its `/v1`, with an optional key. Without a key the server takes any
+    value, so a placeholder goes out."""
+    from .local_server import PLACEHOLDER_KEY, remember_server, thinking_as_template_kwargs, v1_base
+
+    class _LocalServerProvider(OpenAIProvider):
+        # The thinking switch, in the form these servers read.
+        def complete(self, **kwargs: Any):
+            return super().complete(**thinking_as_template_kwargs(kwargs))
+
+        def stream(self, **kwargs: Any):
+            return super().stream(**thinking_as_template_kwargs(kwargs))
+
+    def build(profile: dict[str, Any], secrets: Any) -> ProviderClient:
+        key = ((profile or {}).get("api_key") or "").strip() or PLACEHOLDER_KEY
+        remember_server(name, (profile or {}).get("base_url"), key if key != PLACEHOLDER_KEY else None)
+        return _LocalServerProvider(api_key=key, base_url=v1_base(name, (profile or {}).get("base_url")))
+
+    return build
+
+
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
+def _build_openrouter_account(profile: dict[str, Any], secrets: Any) -> ProviderClient:
+    """The `openrouter-account` provider: the key OpenRouter issued at sign-in
+    (providers/openrouter_auth.py), always against OpenRouter's own endpoint — a
+    browser credential is never sent to a custom gateway."""
+    api_key = ((profile or {}).get("api_key") or "").strip()
+    if not api_key:
+        raise RuntimeError("OpenRouter account not signed in — sign in under Models & Keys.")
+    return OpenAIProvider(api_key=api_key, base_url=OPENROUTER_BASE_URL)
 
 
 def _openai_compat(vendor: str, default_base_url: str, env_key: Optional[str] = None):
@@ -363,6 +405,7 @@ DESCRIPTORS: list[ProviderDescriptor] = [
     ),
     ProviderDescriptor(
         name="openai-codex",
+        kind="subscription",
         title="ChatGPT subscription",
         needs_key=False,
         fields=[],
@@ -684,10 +727,74 @@ DESCRIPTORS: list[ProviderDescriptor] = [
             ),
         ],
         build=_build_ollama,
+        kind="local",
         # Reliable native tool-calling + strong coding quality (verified). Pull with
         # `ollama pull qwen3-coder:30b`.
         recommended_model="qwen3-coder:30b",
     ),
+]
+
+DESCRIPTORS += [
+ProviderDescriptor(
+        name="openrouter-account",
+        kind="subscription",
+        title="OpenRouter account",
+        needs_key=False,
+        fields=[],
+        build=_build_openrouter_account,
+        recommended_model="z-ai/glm-5.2",
+        blurb="Sign in with your OpenRouter account and use its credits — nothing to "
+        "paste. The key OpenRouter issues stays on this machine.",
+        auth="oauth",
+    ),
+ProviderDescriptor(
+        name="llamacpp",
+        title="llama.cpp",
+        needs_key=False,
+        fields=[
+            ProviderField(
+                "base_url",
+                "Server address",
+                secret=False,
+                required=False,
+                placeholder="http://localhost:8080",
+                help="Where `llama-server` is listening. The /v1 path is added automatically.",
+            ),
+            ProviderField(
+                "api_key",
+                "API key (only if the server was started with one)",
+                secret=True,
+                required=False,
+            ),
+        ],
+        build=_local_server("llamacpp"),
+        blurb="A llama-server you started yourself, on this computer or another one.",
+        kind="local",
+    ),
+ProviderDescriptor(
+        name="vllm",
+        title="vLLM",
+        needs_key=False,
+        fields=[
+            ProviderField(
+                "base_url",
+                "Server address",
+                secret=False,
+                required=False,
+                placeholder="http://localhost:8000",
+                help="Where `vllm serve` is listening. The /v1 path is added automatically.",
+            ),
+            ProviderField(
+                "api_key",
+                "API key (only if the server was started with one)",
+                secret=True,
+                required=False,
+            ),
+        ],
+        build=_local_server("vllm"),
+        blurb="A vLLM server, usually on a Linux machine with an NVIDIA GPU.",
+        kind="local",
+    )
 ]
 
 _BY_NAME = {d.name: d for d in DESCRIPTORS}
@@ -720,7 +827,7 @@ def descriptor_configured(d: ProviderDescriptor, profile: dict[str, Any]) -> boo
     """
     if d.auth == "oauth":
         # A stored token set = signed in (the tokens live in the same profile).
-        return bool((profile or {}).get("tokens"))
+        return bool((profile or {}).get("tokens") or (profile or {}).get("api_key"))
     if not d.needs_key:
         return True  # keyless (Ollama) — usable out of the box
     profile = profile or {}
@@ -968,6 +1075,9 @@ def verify_provider_key(
                 params={"key": key},
                 timeout=timeout,
             )
+        elif name in ("llamacpp", "vllm"):
+            from .local_server import v1_base
+            resp = httpx.get(v1_base(name, base_url) + "/models", headers={"Authorization": f"Bearer {key}"} if key else {}, timeout=timeout)
         elif name == "ollama":
             base = _normalize_ollama_url(base_url)
             resp = httpx.get(base.rstrip("/") + "/models", timeout=timeout)

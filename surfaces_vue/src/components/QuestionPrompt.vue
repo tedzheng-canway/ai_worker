@@ -1,6 +1,7 @@
 <script setup>
 import { t } from '../i18n';
 import { computed, ref, watch } from "vue";
+import { SKIP_SENTINEL, questionKey, skipRemaining } from '../question-answers.js';
 
 const props = defineProps({ item: { type: Object, required: true } });
 const emit = defineEmits(["answer"]);
@@ -32,15 +33,16 @@ const grouped = computed(() => specs.value.length > 1 || !!props.item.questions?
 const optionLabel = (option) => typeof option === "string" ? option : option.label || "";
 const optionDescription = (option) => typeof option === "string" ? "" : option.description || "";
 const recommended = (option) => typeof option === "object" && !!option.recommended;
-const keyFor = (question) => question.header || question.question;
+const keyFor = questionKey;
 
 function submit(answer) {
   const value = answer.trim();
-  if (!value) return;
-  if (!grouped.value) return emit("answer", value);
+  if (!value) return false;
+  if (!grouped.value) { emit("answer", value); return true; }
   answers.value = { ...answers.value, [keyFor(spec.value)]: value };
   if (step.value + 1 < specs.value.length) step.value += 1;
   else emit("answer", JSON.stringify(answers.value));
+  return true;
 }
 function pick(option) {
   const label = optionLabel(option);
@@ -50,7 +52,14 @@ function pick(option) {
 function submitSelected() { submit(selected.value.join(", ")); }
 function submitText() { submit(text.value); }
 function previous() { if (step.value > 0) step.value -= 1; }
-watch(step, () => { selected.value = []; text.value = ""; });
+function skip() { submit(SKIP_SENTINEL); }
+function skipAll() { emit('answer', grouped.value ? JSON.stringify(skipRemaining(specs.value, answers.value)) : SKIP_SENTINEL); }
+watch(step, () => {
+  const saved = answers.value[keyFor(spec.value)];
+  selected.value = saved && saved !== SKIP_SENTINEL ? spec.value.options.map(optionLabel).filter(label => saved.split(', ').includes(label)) : [];
+  text.value = saved && saved !== SKIP_SENTINEL ? saved : '';
+});
+defineExpose({ answerText: submit });
 </script>
 
 <template>
@@ -73,5 +82,9 @@ watch(step, () => { selected.value = []; text.value = ""; });
       <input v-model="text" :placeholder="spec.options.length ? t(&quot;也可以输入自己的回答&quot;) : t(&quot;请输入回答&quot;)" autofocus />
       <button class="btn primary" :disabled="!text.trim()">{{ t("发送") }}</button>
     </form>
+    <div class="question-skip actions">
+      <button type="button" class="btn" @click="skip">{{ t('跳过此题') }}</button>
+      <button v-if="grouped && step + 1 < specs.length" type="button" class="btn" @click="skipAll">{{ t('跳过剩余问题') }}</button>
+    </div>
   </section>
 </template>

@@ -20,6 +20,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
+from .. import model_config as _model_config
 from ..agent import build_engine
 from ..agents import get_agent
 from ..connections import (
@@ -27,7 +28,7 @@ from ..connections import (
     SessionConnectionStore,
     effective as effective_connections,
 )
-from ..inbox import InboxStore, args_preview
+from ..inbox import InboxStore, KIND_QUESTION, args_preview
 from ..inbox_routing import InboxRouting
 from ..personas import PersonaRegistry
 from ..personas.registry import set_registry as set_persona_registry
@@ -272,8 +273,7 @@ class SessionManager:
         self._data_base = base
         # Desktop/UI prefs (default model, onboarding state) — not secrets; a plain JSON file.
         self._prefs = self._load_prefs()
-        if self._prefs.get("default_model"):
-            self.model = self._prefs["default_model"]
+        self.model = _model_config.default_model() or self._prefs.get("default_model") or self.model
         # Seed the PDF-fallback module global from prefs so engines see the user's
         # choice from the first turn (set_pdf_settings keeps it in sync after).
         from ..pdf_support import set_fallback_mode
@@ -609,6 +609,8 @@ class SessionManager:
                 engine.team_approver = team_approver
             if items_approver is not None:
                 engine.items_approver = items_approver
+            if not self.is_running(session_id):
+                self.apply_model_settings(session_id)
             return engine
 
         record = self.session_store.load(session_id)
@@ -683,6 +685,7 @@ class SessionManager:
             user_rules=lambda: self.memory_settings.user_rules,
             on_memory_saved=self._memory_saved_notifier(session_id),
             messages=messages,
+            model_settings=_model_config.model_settings_for(model),
             extra_tools=[
                 *(extra_tools or []),
                 *self._team_tools_for(session_id, ag, record, ws),
@@ -748,6 +751,7 @@ class SessionManager:
             engine.compaction_state = CompactionState.from_dict(record.compaction)
         engine.compaction_settings = self.compaction_settings
         self._engines[session_id] = engine
+        self.apply_model_settings(session_id)
         if is_new_session:
             self._emit_session_created(session_id, agent_name)
         return engine
@@ -3028,6 +3032,8 @@ class SessionManager:
                 if d.name == "openai-codex":
                     row["authorizing"] = self._codex_authorizing
                     row["last_error"] = self._codex_error
+            if d.kind == "local":
+                row["alive"] = self._ollama_alive() if d.name == "ollama" else self._local_server_alive(d.name)
             out.append(row)
         return out
 
@@ -3102,6 +3108,8 @@ class SessionManager:
         """Bare model-name suggestions for the 'add model' form (datalist), per provider.
         Ollama → live `/api/tags` (best-effort); everyone else → the curated matrix,
         topped up with the compat-vendor extras the matrix doesn't vouch for."""
+        if name in ("llamacpp", "vllm"):
+            return [m.split(":", 1)[-1] for m in self._local_server_models(name)]
         if name == "ollama":
             return [m.split(":", 1)[-1] for m in self._ollama_models()]
         from ..providers.matrix import models_for_provider
@@ -3239,6 +3247,17 @@ class SessionManager:
         d = get_descriptor(name)
         if d is None:
             return {"ok": False, "error": f"unknown provider: {name}"}
+        if name == "openrouter-account":
+            import httpx
+
+            key = (self.secrets.get("provider:openrouter-account") or {}).get("api_key")
+            if not key:
+                return {"ok": False, "error": "OpenRouter account not signed in"}
+            try:
+                response = httpx.get("https://openrouter.ai/api/v1/auth/key", headers={"Authorization": f"Bearer {key}"}, timeout=10)
+                return {"ok": response.status_code == 200, **({"error": "OpenRouter account verification failed"} if response.status_code != 200 else {})}
+            except httpx.HTTPError:
+                return {"ok": False, "error": "Could not reach OpenRouter"}
         if d.auth == "oauth":
             # No key form — verify from the stored token set (signed-out / expired / OK).
             from ..providers import codex_auth
@@ -3340,24 +3359,11 @@ class SessionManager:
         return alive
 
     def _ollama_models(self) -> list[str]:
-        """Live list of models pulled into the configured Ollama server (via its native
-        `/api/tags`), as `ollama:<name>` so they're directly selectable. Empty if Ollama isn't
-        configured or unreachable — best-effort, never raises."""
-        profile = self.secrets.get("provider:ollama")
-        if not profile:
-            return []
-        base = (profile.get("base_url") or "http://localhost:11434").strip().rstrip("/")
-        if base.endswith("/v1"):
-            base = base[: -len("/v1")]
-        try:
-            import httpx
+        """Offer installed tool-capable models, including unknown capabilities on old servers."""
+        from ..providers import ollama_facts
 
-            data = httpx.get(base + "/api/tags", timeout=2.0).json()
-            return [
-                f"ollama:{m['name']}" for m in data.get("models", []) if m.get("name")
-            ]
-        except Exception:
-            return []
+        profile = self.secrets.get("provider:ollama") or {}
+        return [row["model"] for row in ollama_facts.model_facts(profile.get("base_url")) if row.get("tools") is not False]
 
     def _curated_models(self) -> list[str]:
         """The models offered in the composer's selector: every curated-matrix model
@@ -3405,7 +3411,7 @@ class SessionManager:
         models = self._prefs.get("models")
         models = models if isinstance(models, list) else []
         self._prefs["models"] = [m for m in models if m != model]
-        if model in MATRIX:
+        if model in MATRIX or self._model_provider(model) in ("ollama", "llamacpp", "vllm"):
             hidden = self._prefs.get("hidden_models") or []
             if model not in hidden:
                 self._prefs["hidden_models"] = [*hidden, model]
@@ -3424,12 +3430,15 @@ class SessionManager:
         # Ollama is keyless, so "configured" is meaningless there — its models show only
         # while a local Ollama answers (cached liveness probe).
         def _selectable(m: str) -> bool:
-            provider = self._model_provider(m)
-            if provider == "ollama":
-                return self._ollama_alive()
-            return self._provider_configured(provider)
+            return self.model_selectable(m)
 
         selectable = [m for m in self._curated_models() if _selectable(m)]
+        hidden = set(self._prefs.get("hidden_models") or [])
+        live = self._ollama_models() if self._ollama_alive() else []
+        for local in ("llamacpp", "vllm"):
+            if self.secrets.get(f"provider:{local}") and self._local_server_alive(local):
+                live.extend(self._local_server_models(local))
+        selectable = list(dict.fromkeys([*selectable, *(m for m in live if m not in hidden)]))
         if self.model not in selectable:
             selectable.insert(0, self.model)
         from ..providers.matrix import model_context_windows, model_labels
@@ -3443,12 +3452,14 @@ class SessionManager:
             "model_labels": model_labels(),
             # {full id → context window in tokens}, verified matrix entries only —
             # drives the composer's context-fill meter (absent id → meter hides).
-            "model_context_windows": model_context_windows(),
+            "model_context_windows": self.model_context_windows(selectable),
+            "model_config": _model_config.load(),
+            "model_groups": {m: ("local" if self._model_provider(m) in ("ollama", "llamacpp", "vllm") else "cloud") for m in selectable},
             "has_key": env_key or stored,
             # Provider-agnostic "can this default model actually run?" — true when the default
             # model's provider is configured (any provider, not just OpenAI). Drives the GUI's
             # "No model connected" composer chip and the onboarding Skip warning.
-            "model_ready": self._provider_configured(self._model_provider(self.model)),
+            "model_ready": _selectable(self.model),
             "source": "env" if env_key else ("store" if stored else None),
             "onboarded": bool(self._prefs.get("onboarded")),
             "experimental_connectors": experimental_enabled(self.secrets),
@@ -3703,6 +3714,7 @@ class SessionManager:
         model = (model or "").strip()
         if not model:
             return {"ok": False, "error": "empty model"}
+        _model_config.set(model, {"default": True})
         self.model = model
         self._prefs["default_model"] = model
         self._save_prefs()
@@ -4674,6 +4686,8 @@ class SessionManager:
         target = f"{binding.channel}:{binding.target}"
         body = "\n".join(p for p in (item.title, item.body) if p).strip()
         buttons = buttons_for(item)
+        if item.kind == KIND_QUESTION and (item.questions or not item.options):
+            body += "\n(Open the app to answer, or skip below.)"
         try:
             if buttons:
                 await self.gateway.deliver_interactive(target, body, buttons)
@@ -5974,6 +5988,18 @@ class SessionManager:
         invalidate = getattr(self.provider, "invalidate", None)
         if callable(invalidate):
             invalidate(name)
+        if name in (None, "ollama", "llamacpp", "vllm"):
+            from ..providers import ollama_facts, local_server, ollama_context
+
+            ollama_facts.forget_all()
+            local_server.forget_all()
+            for vendor in local_server.LOCAL_SERVERS:
+                if name is None or name == vendor:
+                    profile = self.secrets.get(f"provider:{vendor}") or {}
+                    local_server.remember_server(vendor, profile.get("base_url"), profile.get("api_key"))
+            ollama_context._resolved.clear()
+            self._ollama_alive_cache = None
+            self._local_alive_cache = {}
 
     # -- read models ------------------------------------------------------------
     def list_sessions(self, workspace: Optional[str] = None) -> list[dict[str, Any]]:
@@ -6448,6 +6474,237 @@ class SessionManager:
         self, enabled: Optional[bool] = None, user_rules: Optional[str] = None
     ) -> dict[str, Any]:
         return self.memory_settings.set(enabled=enabled, user_rules=user_rules)
+
+
+
+    def local_model_facts(self, name: str) -> dict[str, Any]:
+        """The models a local provider has, with size, tool support, thinking, context
+        and how each sits on this machine. Ollama lists what it pulled; llama.cpp and
+        vLLM report the model they serve."""
+        from ..providers import local_server, ollama_facts
+
+        if name == "ollama":
+            profile = self.secrets.get("provider:ollama") or {}
+            rows = ollama_facts.model_facts(profile.get("base_url"), fresh=True)
+            return {"provider": name, "models": rows, "alive": self._ollama_alive()}
+        if name in local_server.LOCAL_SERVERS:
+            profile = self.secrets.get(f"provider:{name}") or {}
+            rows = local_server.model_facts(name, profile.get("base_url"), profile.get("api_key"), fresh=True)
+            return {"provider": name, "models": rows, "alive": self._local_server_alive(name)}
+        return {"provider": name, "models": [], "error": "no local model list for this provider"}
+
+
+    def _local_server_alive(self, name: str) -> bool:
+        """Best-effort liveness of a llama.cpp or vLLM server, cached 30 s like Ollama's."""
+        import time
+
+        from ..providers import local_server
+
+        now = time.monotonic()
+        cache = getattr(self, "_local_alive_cache", None) or {}
+        hit = cache.get(name)
+        if hit and now - hit[0] < 30:
+            return hit[1]
+        profile = self.secrets.get(f"provider:{name}") or {}
+        alive = local_server.alive(name, profile.get("base_url"), profile.get("api_key"))
+        cache[name] = (now, alive)
+        self._local_alive_cache = cache
+        return alive
+
+
+    def _local_server_models(self, name: str) -> list[str]:
+        """The model ids a llama.cpp or vLLM server serves, as `<name>:<id>`; empty when
+        it does not answer or was started without tool calling."""
+        from ..providers import local_server
+
+        profile = self.secrets.get(f"provider:{name}") or {}
+        return [
+            row["model"]
+            for row in local_server.model_facts(name, profile.get("base_url"), profile.get("api_key"))
+            if row.get("tools") is not False and row.get("inference_ready") is not False
+        ]
+
+
+    def system_facts(self) -> dict[str, Any]:
+        """This machine, for the "Your system" section: processor, graphics, memory,
+        storage, and the largest model file that runs well here."""
+        from ..providers import local_machine
+
+        return local_machine.system_facts()
+
+    def model_selectable(self, model: str) -> bool:
+        provider = self._model_provider(model)
+        if provider == "ollama":
+            return self._ollama_alive() and model in self._ollama_models()
+        if provider in ("llamacpp", "vllm"):
+            return self._local_server_alive(provider) and model in self._local_server_models(provider)
+        return self._provider_configured(provider)
+
+
+    def model_controls(self, model: str) -> dict[str, Any]:
+        """The thinking switch and reasoning-effort levels a model has, with its defaults
+        (providers/model_controls.py). Local models: from what their server reports."""
+        from ..providers import local_server, model_controls, ollama_facts
+        from ..providers.recommended import recommendation_for
+
+        if not model:
+            return model_controls.NONE.as_dict()
+        provider = self._model_provider(model)
+        bare = model.split(":", 1)[1] if (provider != "openai" or model.startswith("openai:")) else model
+        d = get_descriptor(provider)
+        local = d is not None and d.kind == "local"
+        server_thinking = None
+        if local:
+            try:
+                profile = self.secrets.get(f"provider:{provider}") or {}
+                rows = (
+                    ollama_facts.model_facts(profile.get("base_url"))
+                    if provider == "ollama"
+                    else local_server.model_facts(provider, profile.get("base_url"), profile.get("api_key"))
+                )
+                server_thinking = next((r.get("thinking") for r in rows if r.get("model") == model), None)
+            except Exception:
+                server_thinking = None
+        rec = recommendation_for(model)
+        controls = model_controls.controls_for(
+            provider,
+            bare,
+            local=local,
+            server_thinking=server_thinking,
+            recommended_thinking=(rec.thinking_available, rec.thinking_default) if rec else None,
+            saved=_model_config.get(model),
+        )
+        return controls.as_dict()
+
+
+    def get_model_config(self, model: str = "") -> dict[str, Any]:
+        """One model's settings in force, with where each came from; or every saved
+        record when no model is named."""
+        if model:
+            from ..providers.prices import price_for
+
+            effective = _model_config.effective(model)
+            effective["default"] = {"value": model == self.model, "from": "user"}
+            if effective["context_size"]["value"] is None:
+                window = self.model_context_windows([model]).get(model)
+                if window:
+                    provider = self._model_provider(model)
+                    effective["context_size"] = {"value": window, "from": "machine" if provider == "ollama" else "server" if provider in ("llamacpp", "vllm") else "recommended"}
+            runtime_context = self.model_context_windows([model]).get(model)
+            return {"model": model, **effective, "runtime_context_size": runtime_context,
+                    "controls": self.model_controls(model), "price": price_for(model)}
+        return {"models": _model_config.load()}
+
+    def _validate_model_controls(self, model: str, values: dict) -> Optional[str]:
+        if values.get("thinking") is None and values.get("reasoning_effort") is None:
+            return None
+        controls = self.model_controls(model)
+        if values.get("thinking") is not None and controls["thinking"]["support"] != "supported":
+            return f"{model} has no thinking switch"
+        effort = values.get("reasoning_effort")
+        if effort is not None and effort not in controls["reasoning"].get("levels", []):
+            return f"{model} does not take reasoning effort {effort!r}"
+        return None
+
+    def set_model_config(self, model: str, values: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(model, str):
+            return {"ok": False, "error": "model must be a string"}
+        model = (model or "").strip()
+        if not model:
+            return {"ok": False, "error": "empty model"}
+        cleaned, error = _model_config.clean(values)
+        error = error or self._validate_model_controls(model, cleaned)
+        if error:
+            return {"ok": False, "error": error}
+        record, error = _model_config.set(model, cleaned)
+        if error:
+            return {"ok": False, "error": error}
+        if record.get("default"):
+            self.model = model
+            self._prefs["default_model"] = model
+            self._save_prefs()
+        self._refresh_provider(self._model_provider(model))
+        for sid, engine in self._engines.items():
+            if engine.model == model and not self.is_running(sid):
+                self.apply_model_settings(sid)
+        return {"ok": True, **self.get_model_config(model)}
+
+    def remove_model_config(self, model: str) -> dict[str, Any]:
+        return self.set_model_config(model, dict.fromkeys(_model_config.KEYS))
+
+    def model_context_windows(self, models: list[str]) -> dict[str, int]:
+        from ..providers.matrix import model_context_windows
+        from ..providers import ollama_facts, local_server
+
+        windows = model_context_windows()
+        for model in models:
+            saved = _model_config.context_size_for(model)
+            if saved:
+                windows[model] = saved
+        for name in ("ollama", "llamacpp", "vllm"):
+            if not any(m.startswith(name + ":") for m in models):
+                continue
+            profile = self.secrets.get(f"provider:{name}") or {}
+            rows = (ollama_facts.model_facts(profile.get("base_url")) if name == "ollama" else
+                    local_server.model_facts(name, profile.get("base_url"), profile.get("api_key")))
+            windows.update({r["model"]: r["context"] for r in rows if r.get("context")})
+        return windows
+
+    def apply_model_settings(self, session_id: str) -> None:
+        engine = self._engines.get(session_id)
+        if engine is None:
+            return
+        settings = _model_config.model_settings_for(engine.model)
+        workspace = getattr(engine, "audit_context", {}).get("workspace") or None
+        cfg = load_config(workspace)
+        if cfg.max_output_tokens is not None:
+            settings.setdefault("max_tokens", cfg.max_output_tokens)
+        if cfg.reasoning_effort:
+            settings.setdefault("reasoning_effort", cfg.reasoning_effort)
+        record = (self._prefs.get("session_model_settings") or {}).get(session_id) or {}
+        if record.get("model") == engine.model:
+            values = record.get("values") or {}
+            if not self._validate_model_controls(engine.model, values):
+                if "reasoning_effort" in values:
+                    settings["reasoning_effort"] = values["reasoning_effort"]
+                if "thinking" in values:
+                    settings["extra_body"] = {**settings.get("extra_body", {}), "think": values["thinking"]}
+        engine.model_settings = settings
+
+    def set_session_model_settings(self, session_id: str, values: dict[str, Any]) -> dict[str, Any]:
+        engine = self._engines.get(session_id)
+        if engine is None:
+            return {"ok": False, "error": "session not running"}
+        if self.is_running(session_id):
+            return {"ok": False, "error": "Wait for the current turn to finish before changing model settings."}
+        if not isinstance(values, dict) or any(k not in ("thinking", "reasoning_effort") for k in values):
+            return {"ok": False, "error": "Only thinking and reasoning_effort are session settings."}
+        cleaned, error = _model_config.clean(values)
+        error = error or self._validate_model_controls(engine.model, cleaned)
+        if error:
+            return {"ok": False, "error": error}
+        records = self._prefs.setdefault("session_model_settings", {})
+        old = records.get(session_id) or {}
+        merged = dict(old.get("values") or {}) if old.get("model") == engine.model else {}
+        for key, value in cleaned.items():
+            if value is None:
+                merged.pop(key, None)
+            else:
+                merged[key] = value
+        records[session_id] = {"model": engine.model, "values": merged}
+        self._save_prefs()
+        self.apply_model_settings(session_id)
+        return {"ok": True, **self.session_model_settings(session_id)}
+
+    def session_model_settings(self, session_id: str, model: str = "") -> dict[str, Any]:
+        engine = self._engines.get(session_id)
+        active = engine.model if engine else model
+        record = (self._prefs.get("session_model_settings") or {}).get(session_id) or {}
+        values = record.get("values") if record.get("model") == active else {}
+        return {"model": active, "thinking": (values or {}).get("thinking"),
+                "reasoning_effort": (values or {}).get("reasoning_effort"), "controls": self.model_controls(active)}
+
+
 
 
 def _parse_inbox_json(s: str) -> dict[str, Any]:

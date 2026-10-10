@@ -9,6 +9,8 @@ import { KEY_HELP, providerRank } from '../providers/catalog';
 import ProviderMark from './ProviderMark.vue';
 import ProviderField from './ProviderField.vue';
 import ProviderModels from './ProviderModels.vue';
+import LocalModels from './LocalModels.vue';
+import OpenRouterAccount from './OpenRouterAccount.vue';
 defineProps({ onboarding: Boolean });
 const emit = defineEmits(['change', 'ready']);
 const providers=ref([]), settings=ref(null), selected=ref(''), fields=ref({}), dirty=ref({});
@@ -76,7 +78,8 @@ onBeforeUnmount(()=>{disposed=true;clearTimeout(timer);clearTimeout(returnTimer)
       <header class="provider-detail-head"><ProviderMark :name="info.name" :title="info.title" large /><div><h2>{{ info.title }}</h2><small class="provider-status" :class="{connected:info.signed_in || (info.configured&&info.needs_key) || tested.has(info.name)}">{{ status(info) }}</small></div></header>
       <p v-if="info.blurb" class="provider-help">{{ info.blurb }}</p>
       <fieldset :disabled="busy" class="settings-fields provider-detail">
-        <div v-if="info.auth==='oauth'" class="provider-oauth">
+        <OpenRouterAccount v-if="info.name === 'openrouter-account'" @change="act(refresh)" />
+        <div v-else-if="info.auth==='oauth'" class="provider-oauth">
           <div v-if="info.signed_in" class="provider-account"><span>{{ info.account || t('✓ 已登录') }}</span><button class="btn" @click="signout">{{ t('退出账号') }}</button></div>
           <button v-else class="btn primary" :disabled="waiting||info.name!=='openai-codex'" @click="signin">{{ waiting?t('等待浏览器…'):t('使用 ChatGPT 登录') }}</button>
           <p v-if="waiting" class="provider-help">{{ t('在浏览器窗口中完成登录。') }} <a v-if="reopenUrl" :href="reopenUrl" target="_blank" rel="noopener noreferrer">{{ t('重新打开登录页') }}</a></p>
@@ -101,6 +104,7 @@ onBeforeUnmount(()=>{disposed=true;clearTimeout(timer);clearTimeout(returnTimer)
       <button v-if="credentialed&&info.key_source!=='env'&&info.auth!=='oauth'&&!onboarding" class="provider-remove" :disabled="busy" @click="forget">{{ t('移除密钥…') }}</button>
       <p v-if="info.key_source==='env'" class="provider-help" data-testid="provider-key-source">{{ t('密钥来自服务器环境变量：') }} <code>{{ info.env_key }}</code>。{{ t('如需移除，请修改环境变量并重启服务；在此保存密钥可覆盖它。') }}</p>
       <p v-else-if="info.key_source==='store'" class="provider-help">{{ t('密钥已保存在本机。') }}<template v-if="info.env_key">{{ t('移除后将使用环境变量：') }} <code>{{ info.env_key }}</code></template></p>
+      <LocalModels v-if="info.kind === 'local' || ['ollama','llamacpp','vllm'].includes(info.name)" :key="info.name" :provider="info.name" @change="act(refresh)" />
       <ProviderModels v-if="!onboarding" :settings="settings" :providers="providers" :provider="info" :busy="busy" @change="act(refresh)" @error="error=$event" />
     </template>
   </div>

@@ -735,13 +735,25 @@ class TurnEngine:
 
     # -- auto-compaction (OPE-27) ------------------------------------------------
     def _compaction_config(self) -> dict[str, Any]:
+        from . import model_config
+
         cfg = dict(self.compaction_defaults)
         if self.compaction_settings:
             cfg.update(self.compaction_settings() or {})
+        saved_pct = model_config.compaction_threshold_for(self.model)
+        if saved_pct is not None:
+            cfg["threshold_pct"] = saved_pct
         if not cfg.get("context_window"):
             from .providers.matrix import model_context_windows
+            from .providers.local_server import context_window_for as server_window
+            from .providers.ollama_context import context_window_for as ollama_window
 
-            cfg["context_window"] = model_context_windows().get(self.model)
+            # Local transports and server startup options fix the actual window.
+            cfg["context_window"] = (
+                ollama_window(self.model) or server_window(self.model)
+                or model_config.context_size_for(self.model)
+                or model_context_windows().get(self.model)
+            )
         cfg.setdefault("threshold_pct", _compaction.DEFAULT_THRESHOLD_PCT)
         cfg.setdefault("cap_tokens", _compaction.DEFAULT_CAP_TOKENS)
         cfg.setdefault("summary_max_tokens", _compaction.SUMMARY_MAX_TOKENS)

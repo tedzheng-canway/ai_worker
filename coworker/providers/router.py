@@ -3,7 +3,7 @@ string to a per-provider client, built lazily from its SecretStore profile and c
 
 This is the single provider the `SessionManager` hands to every engine, so `complete()/stream()`
 (which already receive the full model string per-call) route themselves: `ollama:llama3.3` →
-the Ollama client (Ollama's OpenAI-compatible `/v1`), bare `gpt-5.5` → the default (OpenAI). The
+the Ollama client (native `/api/chat` via its transport), bare `gpt-5.5` → the default (OpenAI). The
 prefix is stripped before delegating, since the underlying SDKs want the bare model name.
 
 Config changes (a new key, a new Ollama URL) call `invalidate()` to drop cached clients, so
@@ -15,7 +15,7 @@ from __future__ import annotations
 import threading
 from typing import Any, Optional
 
-from .base import ProviderClient
+from .base import ProviderClient, ModelCapabilities
 from .capabilities import capabilities_for
 from .registry import build_provider_client, get_descriptor
 
@@ -98,7 +98,8 @@ class ProviderRouter(ProviderClient):
     ):
         self._note_use(model)
         return self._client_for(model).complete(
-            model=self._bare(model), messages=messages, tools=tools, **settings
+            model=self._bare(model), messages=messages, tools=tools,
+            **self._supported_settings(model, settings),
         )
 
     def stream(
@@ -111,8 +112,43 @@ class ProviderRouter(ProviderClient):
     ):
         self._note_use(model)
         return self._client_for(model).stream(
-            model=self._bare(model), messages=messages, tools=tools, **settings
+            model=self._bare(model), messages=messages, tools=tools,
+            **self._supported_settings(model, settings),
         )
 
+    def _local_facts(self, model: str) -> Optional[dict[str, Any]]:
+        name = self._provider_name(model)
+        if name in ("ollama", "llamacpp", "vllm"):
+            from . import local_server, ollama_facts
+
+            profile = (self._secrets.get(f"provider:{name}") if self._secrets else None) or {}
+            rows = (ollama_facts.model_facts(profile.get("base_url")) if name == "ollama" else
+                    local_server.model_facts(name, profile.get("base_url"), profile.get("api_key")))
+            return next((r for r in rows if r.get("model") == model), None)
+        return None
+
+    def _supported_settings(self, model: str, settings: dict[str, Any]) -> dict[str, Any]:
+        row = self._local_facts(model)
+        if row is None or row.get("thinking") is not False:
+            return settings
+        # A recommendation or older saved setting may outlive the server's model.
+        # Do not send thinking parameters after discovery explicitly rules them out.
+        supported = dict(settings)
+        supported.pop("reasoning_effort", None)
+        extra = supported.get("extra_body")
+        if isinstance(extra, dict):
+            extra = dict(extra)
+            extra.pop("think", None)
+            if extra:
+                supported["extra_body"] = extra
+            else:
+                supported.pop("extra_body", None)
+        return supported
+
     def capabilities(self, model: str):
+        row = self._local_facts(model)
+        if row is not None:
+            return ModelCapabilities(tools=row.get("tools") is not False,
+                                     vision=row.get("vision") is True,
+                                     parallel_tool_calls=False, streaming=True)
         return capabilities_for(model)

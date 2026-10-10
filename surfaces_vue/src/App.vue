@@ -36,6 +36,8 @@ import TeamChatView from './components/TeamChatView.vue';
 import { getInbox } from './inbox-api.js';
 import { getUnattended } from './session-integrations-api.js';
 import { inboxMatches } from './inbox-prompts.js';
+import { resolveInboxItem } from './inbox-api.js';
+import SessionModelControls from './components/SessionModelControls.vue';
 import { getAutomations, connectEvents } from './api';
 const unattended=ref(false),sessionInbox=ref([]),inboxCount=ref(0),automationUnread=ref(0),backgroundError=ref('');
 const connectorFocus=ref(''),automationFocus=ref(''),runContext=ref(null),runToast=ref(null),boardItem=ref(null);
@@ -167,9 +169,13 @@ const modeOptions = computed(() => [
   ...(config.value.auto_approve ? [{ value: "auto-approve", label: "自动审批", description: "自动批准低风险操作" }] : []),
   { value: "auto", label: "绕过审批", description: "直接执行所有操作" },
 ].map(row=>({...row,label:t(row.label),description:t(row.description)})));
-const modelOptions = computed(() => [...new Set([model.value, ...models.value].filter(Boolean))].map((item) => ({ value: item, label: config.value.model_labels?.[item] || (item.includes(":") ? item.split(":").slice(1).join(":") : item), description: models.value.includes(item) ? item : `${item} · 当前会话模型` })));
+const modelOptions = computed(() => [...new Set([model.value, ...models.value].filter(Boolean))].map((item) => ({ value: item, label: config.value.model_labels?.[item] || (item.includes(":") ? item.split(":").slice(1).join(":") : item), group: config.value.model_groups?.[item] === "local" || /^(ollama|llamacpp|vllm):/.test(item) ? t("本地模型") : t("云端模型"), description: models.value.includes(item) ? item : `${item} · 当前会话模型` })));
 const requestKinds = new Set(["approval", "dirreq", "toolreq", "planreq", "teamreq", "itemsreq", "question"]);
 const pending = computed(() => unattended.value ? null : [...messages.value].reverse().find((item) => requestKinds.has(item.kind) && !item.resolved && !sessionInbox.value.some(row=>inboxMatches(item,row))));
+const questionPrompt = ref(null), composerAnswerBusy = ref(false), sessionModelState = ref(null);
+const inboxCards = new Map();
+const composerPrompt = computed(() => pending.value || sessionInbox.value.find(item => ['question', 'plan'].includes(item.kind)));
+function registerInboxCard(id, card) { if (card) inboxCards.set(id, card); else inboxCards.delete(id); }
 
 function addNotice(text) {
   messages.value.push({ kind: "notice", text });
@@ -190,6 +196,7 @@ function handleEvent(event) {
     sessionReady.value = true;
     status.value = "已连接";
     if (data.model) model.value = data.model;
+    sessionModelState.value = data.model_settings || null;
     if (data.mode) {
       mode.value = data.mode;
       if (mode.value === "auto-approve" && !config.value.auto_approve) changeMode("interactive");
@@ -199,6 +206,8 @@ function handleEvent(event) {
     if (data.command_trust?.required) trustRequest.value = data.command_trust;
     loadSkills(); refreshBackground();
     if (typeof data.running === "boolean") running.value = data.running;
+  } else if (event.type === "model_settings") {
+    sessionModelState.value = data;
   } else if (event.type === "turn_start") {
     // Retry/resume continues the same task; fresh input starts a new progress list.
     if ((data.input && data.input !== '(resumed)') || data.source?.connector) todos.value = [];
@@ -538,8 +547,31 @@ async function reloadConfig() {
 
 
 
-function send() {
+async function send() {
   let text = draft.value.trim();
+  const prompt = composerPrompt.value;
+  if (prompt && text && !attachments.value.length && !chosenSkill.value) {
+    if (composerAnswerBusy.value) return;
+    if (prompt.kind === 'question') {
+      const card = prompt.id ? inboxCards.get(prompt.id) : questionPrompt.value;
+      if (card?.answerText(text)) draft.value = '';
+      return;
+    }
+    if (['plan', 'planreq', 'teamreq', 'itemsreq'].includes(prompt.kind)) {
+      composerAnswerBusy.value = true; attachmentError.value = '';
+      try {
+        if (prompt.id) {
+          const resolution = JSON.stringify({ approved: false, feedback: text });
+          requireSuccess(await resolveInboxItem(prompt.id, resolution));
+          sessionInbox.value = sessionInbox.value.filter(item => item.id !== prompt.id);
+          resolvedInbox({ ...prompt, resolution });
+        } else resolveRequest({ approved: false, feedback: text });
+        draft.value = '';
+      } catch (error) { attachmentError.value = error.message; }
+      finally { composerAnswerBusy.value = false; }
+      return;
+    }
+  }
   if (!canSend.value || running.value || needsWorkspace.value || !connected.value || !sessionReady.value || !socket) return;
   if (slashOpen.value && slashSkills.value.length) { chooseSkill(slashSkills.value[Math.max(0, skillIndex.value)]); return; }
   let skill = chosenSkill.value || undefined;
@@ -609,6 +641,7 @@ function cancelWorkspacePicker() {
 
 function keydown(event) {
   if (event.isComposing || event.keyCode === 229) return;
+  if (composerPrompt.value && event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(); return; }
   if (slashOpen.value && ['ArrowUp','ArrowDown','Enter','Escape'].includes(event.key)) {
     event.preventDefault();
     if (event.key === 'Escape') slashDismissed.value = true;
@@ -642,7 +675,7 @@ function resolveRequest(result) {
 }
 
 function changeMode(value) { mode.value = value === "auto-approve" && !config.value.auto_approve ? "interactive" : value; socket?.setMode(mode.value); }
-function changeModel(value) { model.value = value; socket?.setModel(value); }
+function changeModel(value) { if (running.value) return; model.value = value; socket?.setModel(value); }
 function toggleTheme() { setTheme(!dark.value); }
 function formatTime(ts) {
   if (!ts) return "";
@@ -831,9 +864,9 @@ onBeforeUnmount(() => {
       <button v-if="!atBottom" class="btn return-bottom" @click="scrollBottom">{{ t("↓ 回到底部") }}</button>
       <details v-if="todos.length" class="todo-progress"><summary>{{ t("任务进度 ") }}{{ todos.filter(t => t.status === 'completed').length }} / {{ todos.length }}</summary><div v-for="(todo,i) in todos" :key="i"><span>{{ todo.status === 'completed' ? '✓' : todo.status === 'in_progress' ? '◉' : '○' }}</span> {{ todo.content }}</div></details>
 
-      <div v-if="sessionInbox.length" class="inline-inbox"><InboxCard v-for="item in sessionInbox" :key="item.id" :item="item" :live-item="messages.find(row=>row.inboxId===item.id)" :auto-approve="mode==='auto-approve'" inline @resolved="resolvedInbox" /></div>
+      <div v-if="sessionInbox.length" class="inline-inbox"><InboxCard v-for="item in sessionInbox" :key="item.id" :ref="card => registerInboxCard(item.id,card)" :item="item" :live-item="messages.find(row=>row.inboxId===item.id)" :auto-approve="mode==='auto-approve'" inline @resolved="resolvedInbox" /></div>
       <section v-if="pending" :class="pending.kind === 'question' ? 'question-bar' : 'request-bar'">
-        <QuestionPrompt v-if="pending.kind === 'question'" :key="`question-${sessionId}-${messages.indexOf(pending)}`" :item="pending" @answer="respond" />
+        <QuestionPrompt ref="questionPrompt" v-if="pending.kind === 'question'" :key="`question-${sessionId}-${messages.indexOf(pending)}`" :item="pending" @answer="respond" />
         <ApprovalPrompt v-else :key="`request-${sessionId}-${messages.indexOf(pending)}`" :item="pending" :auto-approve="mode === 'auto-approve'" :run-task="!!runContext?.task_id || manualRunEntries.some(entry => entry.session_id === sessionId)" @resolve="resolveRequest" />
       </section>
 
@@ -853,11 +886,12 @@ onBeforeUnmount(() => {
               <button class="btn" :disabled="attaching" :title="t(&quot;添加附件&quot;)" @click="fileInput.click()">{{ attaching ? t("读取中…") : t("＋ 附件") }}</button><input ref="fileInput" type="file" multiple hidden @change="addFiles($event.target.files); $event.target.value = ''" />
               <SelectMenu :model-value="agent" :options="personaOptions" icon="◇" :label="t(&quot;选择智能体&quot;)" @change="changePersona" />
               <SelectMenu :model-value="mode" :options="modeOptions" icon="◉" :label="t(&quot;选择权限模式&quot;)" @change="changeMode" />
-              <SelectMenu v-if="modelOptions.length" class="model-selector" :model-value="model" :options="modelOptions" icon="✦" :label="t(&quot;选择模型&quot;)" wide @change="changeModel" />
+              <SelectMenu v-if="modelOptions.length" class="model-selector" :disabled="running" :model-value="model" :options="modelOptions" icon="✦" :label="t(&quot;选择模型&quot;)" wide @change="changeModel" />
             </div>
+            <SessionModelControls :session-id="sessionId" :model="model" :running="running" :ready="sessionReady" :snapshot="sessionModelState" />
             <TokenUsage :key="sessionId" :usage="usage" :totals="totals" :context-window="contextWindow" :context-bar="config.context_bar" :model-labels="config.model_labels" />
             <button v-if="running" class="stop-button" :title="t(&quot;停止&quot;)" @click="socket.interrupt()">■</button>
-            <button v-else class="send-button" :disabled="!canSend || needsWorkspace || !connected || !sessionReady" :title="t(&quot;发送&quot;)" :aria-label="t(&quot;发送&quot;)" @click="send">↑</button>
+            <button v-if="!running || composerPrompt" class="send-button" :disabled="!canSend || needsWorkspace || !connected || !sessionReady || composerAnswerBusy" :title="t(&quot;发送&quot;)" :aria-label="t(&quot;发送&quot;)" @click="send">↑</button>
           </div>
         </div>
       </footer>

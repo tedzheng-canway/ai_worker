@@ -11,3 +11,5 @@ initPreferences();
 document.documentElement.dataset.style = 'linear';
 
 createApp(App).mount("#app");
+
+import './models.css';

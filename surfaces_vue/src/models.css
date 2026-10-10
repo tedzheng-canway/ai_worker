@@ -1,0 +1,20 @@
+.model-group-label{padding:8px 10px;margin:0;color:var(--muted);font-size:11px;font-weight:600}
+.provider-model-row{flex-wrap:wrap}
+.provider-model-summary{flex-basis:100%;padding-left:24px;color:var(--muted);font-size:11px;overflow-wrap:anywhere}
+.model-settings-dialog{max-height:85vh;overflow-y:auto;width:min(620px,calc(100vw - 32px));box-sizing:border-box}
+.model-settings-fields{display:grid;grid-template-columns:1fr 1fr;gap:14px;border:0;margin:16px 0;padding:0;min-width:0}
+.model-settings-fields>label{display:flex;flex-direction:column;gap:5px;min-width:0;font-size:12px}
+.model-settings-fields small{color:var(--muted);font-size:11px}
+.model-settings-fields input,.model-settings-fields select{min-width:0;width:100%;box-sizing:border-box;padding:8px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--ink)}
+.model-settings-fields .model-default-setting{display:flex;flex-direction:row;align-items:center}
+.model-settings-fields input[type=checkbox]{width:auto}
+.model-settings-fields>p,.model-settings-fields>.actions{grid-column:1/-1;overflow-wrap:anywhere}
+.session-model-controls{display:flex;flex-wrap:wrap;gap:7px;align-items:center;max-width:100%;font-size:11px;color:var(--muted)}
+.session-model-controls label{display:flex;align-items:center;gap:4px}
+.session-model-controls select{max-width:155px;padding:4px;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:5px}
+.local-models{margin:18px 0;padding:16px;border:1px solid var(--line);border-radius:10px}
+.local-models header{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.local-model-row{display:flex;flex-direction:column;align-items:flex-start;gap:7px;padding:12px 0;border-top:1px solid var(--line);overflow-wrap:anywhere}
+.local-model-row small{color:var(--muted)}
+.question-skip{margin-top:10px}
+@media(max-width:760px){.model-settings-fields{grid-template-columns:1fr}.session-model-controls{flex-basis:100%}.composer-toolbar{flex-wrap:wrap}.provider-model-main{flex-basis:65%}}

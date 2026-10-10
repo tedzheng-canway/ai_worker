@@ -4,3 +4,15 @@ export const verifyProvider = (name, fields) => post('/v1/providers/verify', { n
 export const providerSignin = () => post('/v1/providers/openai-codex/signin', {});
 export const providerSignout = () => post('/v1/providers/openai-codex/signout', {});
 export const providerAuthStatus = () => request('/v1/providers/openai-codex/status');
+export const getModelConfig = model => request(`/v1/settings/model-config?${new URLSearchParams({model})}`);
+export const saveModelConfig = (model, values) => post('/v1/settings/model-config', {model, values});
+export const resetModelConfig = model => post('/v1/settings/model-config/remove', {model});
+export const getLocalModels = name => request(`/v1/providers/${encodeURIComponent(name)}/local-models`);
+export const getSystemFacts = () => request('/v1/system/facts');
+export const getSessionModelSettings = (id, model) => request(`/v1/sessions/${encodeURIComponent(id)}/model-settings?${new URLSearchParams({model})}`);
+export const saveSessionModelSettings = (id, values) => post(`/v1/sessions/${encodeURIComponent(id)}/model-settings`, values);
+export const openrouterStatus = () => request('/v1/providers/openrouter-account/status');
+export const openrouterSignin = manual => post('/v1/providers/openrouter-account/signin', {manual});
+export const openrouterComplete = (code, attempt_id) => post('/v1/providers/openrouter-account/complete', {code, attempt_id});
+export const openrouterCancel = () => post('/v1/providers/openrouter-account/cancel', {});
+export const openrouterDisconnect = () => post('/v1/providers/openrouter-account/disconnect', {});
