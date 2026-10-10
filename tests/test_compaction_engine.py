@@ -4,6 +4,11 @@ session persistence round-trip. Scripted providers, tiny forced windows, no netw
 
 import asyncio
 
+import pytest
+
+from coworker.agent import build_engine
+from coworker.agents.cowork import cowork_agent
+from coworker.config import load_config
 from coworker.engine import TurnEngine
 from coworker.events import EventType
 from coworker.permissions import PermissionEngine
@@ -15,6 +20,8 @@ from coworker.providers import (
 )
 from coworker.providers.base import TokenUsage
 from coworker.tools import ToolRegistry
+
+from session_fixtures import ScriptedProvider, make_session_manager
 
 # Must clear the OPE-189 quality gate: all eight sections, past the minimum length. A
 # summary that fails it is refused and the engine falls back to trimming, which is what
@@ -288,3 +295,26 @@ def test_compacting_signal_precedes_the_compacted_marker(tmp_path):
         m.get("role") == "notice" and m.get("kind") == "compacting"
         for m in engine.messages
     )
+
+
+def test_compaction_settings_are_validated_before_mutation(tmp_path, monkeypatch):
+    manager = make_session_manager(tmp_path, monkeypatch)
+    before = manager.compaction_settings()
+    assert not manager.set_compaction_settings(threshold_pct=.5, summary_max_tokens=0)["ok"]
+    assert manager.compaction_settings() == before
+    assert manager.set_compaction_settings(summary_max_tokens=24000)["ok"]
+    assert manager.compaction_settings_payload()["compaction_summary_max_tokens"] == 24000
+    assert make_session_manager(tmp_path, monkeypatch).compaction_settings()["summary_max_tokens"] == 24000
+
+
+def test_environment_output_budgets_reach_engine(tmp_path, monkeypatch):
+    for key, value in {"MAX_OUTPUT_TOKENS": "23000", "TOOL_RESULT_MAX_BYTES": "12000", "COMPACTION_SUMMARY_MAX_TOKENS": "24000", "REASONING_EFFORT": "none"}.items():
+        monkeypatch.setenv("COWORKER_" + key, value)
+    engine = build_engine(agent=cowork_agent(), workspace=tmp_path, provider=ScriptedProvider())
+    assert engine.model_settings["max_tokens"] == 23000
+    assert engine.model_settings["reasoning_effort"] == "none"
+    assert engine._tool_result_max_bytes == 12000
+    assert engine._compaction_config()["summary_max_tokens"] == 24000
+    monkeypatch.setenv("COWORKER_MAX_OUTPUT_TOKENS", "0")
+    with pytest.raises(ValueError):
+        load_config()

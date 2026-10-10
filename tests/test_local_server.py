@@ -10,9 +10,12 @@ import httpx
 import pytest
 
 from coworker import model_config
-from coworker.providers import local_machine, local_server
+from coworker.providers import local_machine, local_server, ollama_facts
 from coworker.providers.capabilities import capabilities_for
 from coworker.providers.registry import get_descriptor, provider_descriptors
+from coworker.providers.router import ProviderRouter
+
+from session_fixtures import ScriptedProvider, manager
 
 
 @pytest.fixture(autouse=True)
@@ -143,3 +146,53 @@ def test_a_chat_template_with_enable_thinking_means_a_thinking_switch(monkeypatc
     _fake_http(monkeypatch, handler)
     (row,) = local_server.model_facts("llamacpp", "http://localhost:8080", fresh=True)
     assert row["thinking"] is True and row["recommendation"] is None
+
+
+@pytest.mark.parametrize("provider", ["ollama", "llamacpp", "vllm"])
+def test_local_capabilities_guard_unsupported_thinking_on_actual_requests(monkeypatch, provider):
+    model = provider + ":local"
+    row = {"model": model, "thinking": False, "tools": False, "vision": True}
+    facts = lambda *a, **kw: [row]
+    monkeypatch.setattr(ollama_facts, "model_facts", facts)
+    monkeypatch.setattr(local_server, "model_facts", facts)
+    recorder = ScriptedProvider()
+    recorder.stream = recorder.complete
+    router = ProviderRouter()
+    router._clients[provider] = recorder
+    capabilities = router.capabilities(model)
+    assert capabilities.tools is False and capabilities.vision is True
+    settings = {"reasoning_effort": "high", "extra_body": {"think": True, "keep_alive": 60}}
+    for call in (router.complete, router.stream):
+        call(model=model, messages=[], **settings)
+        assert recorder.calls[-1]["extra_body"] == {"keep_alive": 60}
+        assert "reasoning_effort" not in recorder.calls[-1]
+    assert settings["extra_body"]["think"] is True
+
+
+def test_saved_context_reports_server_limit_in_settings(manager, monkeypatch):
+    row = {"model": "vllm:local", "context": 8192, "tools": True, "thinking": False}
+    monkeypatch.setattr(local_server, "model_facts", lambda *a, **kw: [row])
+    result = manager.set_model_config("vllm:local", {"context_size": 32768})
+    assert result["context_size"] == {"value": 32768, "from": "user"}
+    assert result["runtime_context_size"] == 8192
+
+
+def test_changing_local_endpoint_updates_engine_context_lookup(manager, monkeypatch):
+    local_server.remember_server("vllm", "http://old:8000", None)
+    manager.secrets.put("provider:vllm", {"base_url": "http://new:8000", "api_key": "local-key"})
+    received = []
+    def facts(name, base, key=None, **kwargs):
+        received.append((name, base, key))
+        return [{"name": "local", "context": 16384}]
+    monkeypatch.setattr(local_server, "model_facts", facts)
+    manager._refresh_provider("vllm")
+    assert local_server.context_window_for("vllm:local") == 16384
+    assert received[-1] == ("vllm", "http://new:8000", "local-key")
+
+
+def test_local_listing_does_not_claim_missing_inference_route(monkeypatch):
+    local_server.forget_all()
+    monkeypatch.setattr(httpx, "get", lambda *a,**kw: httpx.Response(200,json={"data":[{"id":"m","max_model_len":32768}]}))
+    monkeypatch.setattr(httpx, "post", lambda *a,**kw: httpx.Response(404,text="wrong route"))
+    row=local_server.model_facts("vllm","http://gpu:8000")[0]
+    assert row["inference_ready"] is False

@@ -10,6 +10,7 @@ from coworker.compaction import (
     CompactionState,
     DEFAULT_CAP_TOKENS,
     DEFAULT_CONTEXT_WINDOW,
+    SUMMARY_SECTION_MARKERS,
     apply_to_outbound,
     build_state,
     compacted_block,
@@ -24,6 +25,10 @@ from coworker.compaction import (
     trigger_tokens,
     trim_state,
 )
+
+from coworker.providers.base import AssistantTurn
+
+from session_fixtures import ScriptedProvider
 
 
 # -- message builders ---------------------------------------------------------
@@ -429,3 +434,11 @@ def test_user_message_budget_scales_with_the_trigger():
     assert C.user_message_budget(60_000) == 4_800  # a lowered trigger keeps its saving
     assert C.user_message_budget(1_000) == C._USER_BUDGET_MIN  # floor
     assert C.user_message_budget(10_000_000) == C._USER_BUDGET_MAX  # ceiling
+
+
+def test_a_structured_but_truncated_summary_is_refused():
+    text = "\n".join(f"## {heading}\n" + "details " * 20 for heading in SUMMARY_SECTION_MARKERS)
+    provider = ScriptedProvider([AssistantTurn(text=text, finish_reason="length")])
+    with pytest.raises(RuntimeError, match="output limit"):
+        summarize_span(provider, "m", [], max_tokens=24000)
+    assert provider.calls[0]["max_tokens"] == 24000

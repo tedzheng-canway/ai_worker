@@ -14,13 +14,20 @@ import json
 from pathlib import Path
 
 import aisuite as ai
+import pytest
 
 from coworker import toolresult
+from coworker.agent import build_engine
+from coworker.agents.cowork import cowork_agent
 from coworker.engine import TurnEngine
 from coworker.events import EventType
 from coworker.permissions import PermissionEngine
 from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient, ToolCall
+from coworker.toolresult import bound_tool_result, serialize_result
 from coworker.tools import ToolRegistry
+from coworker.tools.files import file_tools
+
+from session_fixtures import ScriptedProvider
 
 
 def _bounded(result, *, max_bytes=10_000, spill: Path | None, step=7, tool="run_shell"):
@@ -183,3 +190,28 @@ def test_multibyte_cut_fits_at_any_spill_path_length(tmp_path):
         assert len(out.encode()) <= 10_000, n
         result = {"command": "x", "exit_code": 0, "output": text, "truncated": False}
         assert _size(_bounded(result, spill=spill)) <= 10_000, n
+
+
+@pytest.mark.parametrize("budget", [2000, 10000])
+@pytest.mark.parametrize("structured", [False, True])
+def test_chinese_nested_results_fit_and_full_json_can_be_recovered(tmp_path, budget, structured):
+    text = "首行\n" + "中文日志与字段 " * 8000 + "\n尾行"
+    result = {"ok": True, "items": [{"text": text}]} if structured else text
+    bounded = bound_tool_result(result, max_bytes=budget, spill_dir=tmp_path, step=1, tool_name="large_log")
+    assert len(serialize_result(bounded).encode("utf-8")) <= budget
+    if structured:
+        assert isinstance(json.loads(serialize_result(bounded)), dict)
+        assert json.loads(Path(bounded["full_result_path"]).read_text(encoding="utf-8")) == result
+    else:
+        assert bounded.startswith("首行") and bounded.endswith("尾行")
+        assert next(tmp_path.glob("*.txt")).read_text(encoding="utf-8") == text
+
+
+def test_spilled_tool_result_is_readable_from_session_roots(tmp_path):
+    engine = build_engine(agent=cowork_agent(), workspace=tmp_path, provider=ScriptedProvider(), session_id="readback")
+    path = engine._tool_result_spill_dir / "log.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(f"中文行{i}" for i in range(5000)), encoding="utf-8")
+    read = file_tools(str(tmp_path), engine.roots)[0]
+    page = read(str(path), start_line=3456, max_lines=2)
+    assert "中文行3455" in page["content"] and page["end_line"] == 3457

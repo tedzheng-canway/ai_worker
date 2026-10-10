@@ -9,6 +9,7 @@ from coworker.providers.matrix import MATRIX, models_for_provider
 from coworker.providers.registry import get_descriptor
 
 
+
 def test_new_flagships_in_matrix_with_labels():
     for mid, label in {
         "gpt-5.6-sol": "GPT-5.6 Sol · OpenAI",
@@ -102,3 +103,7 @@ def test_os_permission_error_is_not_a_model_access_error():
     real = RuntimeError("Error code: 403 - {'type': 'permission_error', 'message': '...'}")
     msg = friendly_model_error("anthropic:claude-fable-5", real)
     assert msg and "doesn't have access to anthropic:claude-fable-5" in msg
+
+
+def test_local_permission_error_is_never_a_model_access_error():
+    assert friendly_model_error("m", PermissionError("permission_error: local cache")) is None

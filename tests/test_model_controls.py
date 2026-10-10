@@ -6,6 +6,8 @@ import pytest
 
 from coworker.providers import model_controls as mc
 from coworker.providers import effort
+from coworker.providers import ollama_context
+from coworker.providers.effort import anthropic_effort, openai_compat_effort
 
 
 def test_the_table_parses_and_every_default_is_one_of_its_levels():
@@ -67,3 +69,10 @@ def test_saved_settings_become_the_defaults_only_when_valid():
     assert c.reasoning.default is mc.EffortLevel.MEDIUM
     c = mc.controls_for("ollama", "qwen3:8b", local=True, server_thinking=True, saved={"thinking": False})
     assert c.thinking.default is False
+
+
+def test_none_effort_does_not_enter_rank_mapping():
+    assert anthropic_effort("claude-fable-5-1", "none", budget_mode=False).params == {}
+    assert openai_compat_effort("gpt-5.6-sol", "none").params == {"reasoning_effort":"none"}
+    assert openai_compat_effort("moonshotai/Kimi-K3", "none").effective == "low"
+    assert ollama_context.to_native_chat({"reasoning_effort":"none"}, 32768)["think"] is False

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
+from coworker import model_config
 from coworker.compaction import is_context_overflow
 from coworker.engine import TurnEngine
 from coworker.providers import ollama_context
@@ -365,3 +366,34 @@ def test_ollama_context_overflow_is_recognized():
         "the prompt is longer than the context length currently available to the model"
     )
     assert is_context_overflow(exc)
+
+
+def test_ollama_user_context_is_bounded_and_errors_are_not_success(monkeypatch):
+    model_config.set("ollama:local", {"context_size":131072})
+    monkeypatch.setenv("OPENWORKER_OLLAMA_NUM_CTX", "32768")
+    requests=[]
+    def handler(request):
+        requests.append(request)
+        if request.url.path == "/api/show":
+            return httpx.Response(200,json={"model_info":{"local.context_length":65536}})
+        return httpx.Response(200,content=b'{"error":"context exceeded","message":{"content":"partial"}}\n')
+    transport = ollama_context.OllamaContextTransport(inner=httpx.MockTransport(handler))
+    with httpx.Client(transport=transport) as client:
+        response=client.post("http://localhost:11434/v1/chat/completions",json={"model":"local","messages":[{"role":"user","content":"full prompt"}],"stream":True})
+        assert '"error"' in response.text
+    body=json.loads(requests[-1].content)
+    assert body["options"]["num_ctx"] == 32768 and body["shift"] is False
+    assert body["messages"][0]["content"] == "full prompt"
+    assert ollama_context.context_window_for("ollama:local") == 32768
+
+
+def test_ollama_nonstream_native_error_is_not_an_empty_completion():
+    transport = ollama_context.OllamaContextTransport(
+        num_ctx=32768, inner=httpx.MockTransport(lambda request:
+            httpx.Response(200, json={"error": "model failed to load"})),
+    )
+    with httpx.Client(transport=transport) as client:
+        response = client.post("http://localhost:11434/v1/chat/completions",
+                               json={"model": "local", "messages": []})
+    assert response.status_code == 500
+    assert response.json()["error"]["message"] == "model failed to load"

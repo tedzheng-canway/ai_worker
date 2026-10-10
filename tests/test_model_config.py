@@ -5,17 +5,22 @@ and compaction."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 
 import httpx
 import pytest
+from fastapi.testclient import TestClient
 
 from coworker import model_config
 from coworker.engine import TurnEngine
 from coworker.providers import local_machine
 from coworker.providers.ollama_context import OllamaContextTransport, to_native_chat
 from coworker.providers.recommended import recommendation_for
+from coworker.server import SessionManager, create_app
+
+from session_fixtures import ScriptedProvider, manager
 
 
 @pytest.fixture(autouse=True)
@@ -274,3 +279,56 @@ def test_a_session_can_set_reasoning_effort_within_the_model_levels(tmp_path):
     # A level saved for the model becomes its default, and Reset goes back to it.
     model_config.set("anthropic:claude-fable-5-1", {"reasoning_effort": "max"})
     assert mgr.model_controls("anthropic:claude-fable-5-1")["reasoning"]["default"] == "max"
+
+
+async def _run(engine):
+    return [event async for event in engine.run("test")]
+
+
+def test_model_settings_and_session_override_survive_restart_and_reach_provider(manager, tmp_path):
+    model = "anthropic:claude-fable-5-1"
+    values = {"context_size":90000, "max_output_tokens":7000, "reasoning_effort":"high", "temperature":0.4, "top_p":0.9, "compaction_threshold_pct":0.6, "default":True}
+    assert manager.set_model_config(model, values)["ok"]
+    engine = manager.get_engine("persist", agent="cowork")
+    assert manager.set_session_model_settings("persist", {"reasoning_effort":"low"})["ok"]
+    asyncio.run(_run(engine))
+    assert manager.provider.calls[-1]["reasoning_effort"] == "low"
+    assert manager.provider.calls[-1]["max_tokens"] == 7000
+    assert engine._compaction_config()["context_window"] == 90000
+    assert engine._compaction_config()["threshold_pct"] == 0.6
+    manager.save("persist", engine)
+    rebuilt = SessionManager(workspace=tmp_path, data_dir=tmp_path / "data", provider=ScriptedProvider())
+    restored = rebuilt.get_engine("persist", agent="cowork")
+    assert rebuilt.model == model and restored.model_settings["reasoning_effort"] == "low"
+    assert rebuilt.set_session_model_settings("persist", {"reasoning_effort":None})["ok"]
+    assert restored.model_settings["reasoning_effort"] == "high"
+    restored.switch_model("ollama:qwen3-coder:30b")
+    rebuilt.apply_model_settings("persist")
+    assert "reasoning_effort" not in restored.model_settings
+    assert restored.model_settings["max_tokens"] == 16384
+
+
+def test_api_validates_configuration_and_running_session(manager):
+    engine = manager.get_engine("s", agent="cowork")
+    with TestClient(create_app(manager)) as client:
+        body = {"model": "anthropic:claude-fable-5-1", "values": {"max_output_tokens":4096}}
+        assert client.post("/v1/settings/model-config", json=body).json()["ok"]
+        cfg = client.get("/v1/settings/model-config", params={"model":body["model"]}).json()
+        assert cfg["max_output_tokens"] == {"value":4096, "from":"user"}
+        assert cfg["top_p"] == {"value":None, "from":"provider"}
+        assert not client.post("/v1/settings/model-config", json={"model":"m", "values":[]}).json()["ok"]
+        assert not client.post("/v1/settings/model-config", json={"model":42, "values":{}}).json()["ok"]
+        assert not client.post("/v1/settings/model-config", json={"model":"m", "values":{"thinking":True}}).json()["ok"]
+        manager.try_mark_running("s")
+        before = dict(engine.model_settings)
+        assert not client.post("/v1/sessions/s/model-settings", json={"reasoning_effort":"low"}).json()["ok"]
+        assert engine.model_settings == before
+        manager.mark_idle("s")
+        assert client.post("/v1/settings/model-config/remove", json={"model":body["model"]}).json()["ok"]
+        assert client.get("/v1/settings/model-config", params={"model":body["model"]}).json()["max_output_tokens"]["from"] == "provider"
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), "0.8", True])
+def test_invalid_sampling_values_never_reach_saved_config(bad):
+    assert model_config.set("m", {"temperature":bad})[1]
+    assert not model_config.get("m")
