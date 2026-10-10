@@ -22,7 +22,7 @@ test('persona defaults and recommendations merge without losing MCP or disabled 
 });
 test('application translation calls have English entries', () => {
   const root = new URL('../src/', import.meta.url), dictionary = JSON.parse(readFileSync(new URL('locales/en.json',root)));
-  const files = ['App.vue',...readdirSync(new URL('components/',root)).filter(f=>f.endsWith('.vue')).map(f=>'components/'+f)];
+  const files = ['App.vue','toolPresentation.js',...readdirSync(new URL('components/',root)).filter(f=>f.endsWith('.vue')).map(f=>'components/'+f)];
   const missing = new Set();
   for (const file of files) {
     const source = readFileSync(new URL(file,root),'utf8').replaceAll('&quot;','"');

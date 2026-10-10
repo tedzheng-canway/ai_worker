@@ -10,6 +10,10 @@ export function approvalMeta(data = {}) {
     approvalOrigin: data.approval_origin || "",
     approvalNote: data.approval_note || data.reviewer_reason || "",
     approvalGrant: data.approval_grant || data.standing_rule || "",
+    standingRule: data.standing_rule || "",
+    reviewerReason: data.reviewer_reason || "",
+    allowAnyway: data.allow_anyway,
+    hidden: Math.max(0, Number(data.display?.hidden_by_filters ?? data.hidden_by_filters) || 0),
   };
 }
 

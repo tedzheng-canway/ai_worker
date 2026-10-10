@@ -88,6 +88,10 @@ html[data-style="linear"] .app .composer { border: 1px solid var(--strong); bord
 html[data-style="linear"] .app .composer:focus-within { border-color: #5e6ad280; }
 html[data-style="linear"] .app .composer textarea { border: 0 !important; border-radius: 6px; background: transparent; min-height: 72px !important; }
 html[data-style="linear"] .composer-toolbar { gap: 8px; padding: 10px; }
+html[data-style="linear"] .composer-toolbar > .selectors { flex: 1; }
+html[data-style="linear"] .composer-toolbar .select-trigger { max-width: 100%; }
+html[data-style="linear"] .composer-toolbar > .token-usage { margin-left: auto; }
+html[data-style="linear"] .composer-toolbar > .selectors + :is(.send-button,.stop-button) { margin-left: auto; }
 html[data-style="linear"] .app .select-trigger { min-height: 36px; }
 html[data-style="linear"] .app .todo-progress { border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
 html[data-style="linear"] .app .detail-panel { background: var(--chrome); border-color: var(--line); }
@@ -104,6 +108,7 @@ html[data-style="linear"] .app .tool-status { border-radius: 3px; }
   html[data-style="linear"] .app .page-view { padding: 24px 16px 40px; }
   html[data-style="linear"] .app button { min-height: 44px; }
   html[data-style="linear"] .app :is(.composer-toolbar,.selectors,.folder-row) { flex-wrap: wrap; }
+  html[data-style="linear"] .app .composer-toolbar > .selectors { flex-basis: 100%; max-width: 100%; }
   html[data-style="linear"] .app .detail-panel { max-width: 100vw; }
 }
 @media(prefers-reduced-motion:reduce) {

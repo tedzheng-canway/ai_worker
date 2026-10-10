@@ -3,7 +3,7 @@ import appLogo from '@app-logo';
 import { t } from './i18n';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { createTempWorkspace, deleteSession, finalizeAutomationRun, getHealth, getMessages, getPersonas, getSessions, getSettings, setSessionFlags, Session } from "./api";
-import { approvalLabels, approvalMeta, historyItems } from "./history";
+import { approvalMeta, historyItems } from "./history";
 import { contextUsage, historyUsage, settingsWithDefaults } from "./settings";
 import { ManualRuns } from "./manualRuns";
 import OnboardingView from './components/OnboardingView.vue';
@@ -21,6 +21,8 @@ import SettingsView from "./components/SettingsView.vue";
 import QuestionPrompt from "./components/QuestionPrompt.vue";
 import FolderDialog from "./components/FolderDialog.vue";
 import SelectMenu from "./components/SelectMenu.vue";
+import TokenUsage from "./components/TokenUsage.vue";
+import ToolTurnGroup from "./components/ToolTurnGroup.vue";
 import ApprovalPrompt from "./components/ApprovalPrompt.vue";
 import MarkdownView from './components/MarkdownView.vue';
 import ArtifactPanel from './components/ArtifactPanel.vue';
@@ -132,15 +134,14 @@ const sessionGroups = computed(() => {
   }
   return [...groups.values()];
 });
-const groupedMessages = computed(() => transcriptGroups(messages.value));
+const groupedMessages = computed(() => transcriptGroups(messages.value, running.value));
+const activeToolTurn = computed(() => groupedMessages.value.find(item => item.kind === 'steps' && item.live));
 const slashSkills = computed(() => /^\/[^\s]*$/.test(draft.value) && !slashDismissed.value ? skills.value.filter(s => s.enabled && s.name.toLowerCase().includes(draft.value.slice(1).toLowerCase())) : []);
 const slashOpen = computed(() => /^\/[^\s]*$/.test(draft.value) && !slashDismissed.value);
 const canSend = computed(() => !!(draft.value.trim() || attachments.value.length || chosenSkill.value) && !attaching.value);
-const totalTokens = computed(() => Object.values(totals.value).reduce((sum, row) => sum + Object.values(row).reduce((n, v) => n + v, 0), 0));
 const archivedSessions = computed(() => sessions.value.filter((item) => item.archived && !item.session_id.startsWith("__")));
 const shownArchived = computed(() => showAllArchived.value ? archivedSessions.value : archivedSessions.value.slice(0, config.value.sessions_peek));
 const contextWindow = computed(() => Number(config.value.model_context_windows?.[usage.value?.model || model.value]) || 0);
-const contextPercent = computed(() => contextWindow.value ? Math.min(100, Math.round((usage.value?.tokens || 0) / contextWindow.value * 100)) : 0);
 const runNotes = computed(() => manualRunEntries.value.filter((entry) => entry.note));
 const title = computed(() => activeSession.value?.title || "新对话");
 const pageTitles = { automations: "自动化", connectors: "连接器", audit: "活动审计", board: "任务看板", settings: "设置", inbox:"收件箱", teamchat:"团队聊天室" };
@@ -796,7 +797,7 @@ onBeforeUnmount(() => {
         </section>
 
         <div v-else class="transcript">
-          <article v-for="(item, index) in groupedMessages" :key="index" :class="['message', item.kind]">
+          <article v-for="(item, index) in groupedMessages" :key="`${sessionId}-${item.key || index}`" :class="['message', item.kind]">
             <template v-if="item.kind === 'user'">
               <div class="user-bubble">{{ item.text }}</div><small>{{ formatTime(item.ts) }}</small>
               <div v-if="item.attachments?.length" class="attachments"><div v-for="(file,i) in item.attachments" :key="i" class="attachment"><img v-if="file.kind === 'image'" :src="file.data_url" :alt="file.name" /><span>{{ file.name }}</span></div></div>
@@ -806,14 +807,14 @@ onBeforeUnmount(() => {
               <details v-if="item.reasoning" class="reasoning"><summary>{{ t("思考过程") }}</summary><pre>{{ item.reasoning }}</pre></details>
               <MarkdownView class="assistant-copy" :text="item.text" /><small>{{ formatTime(item.ts) }}</small>
             </template>
-            <template v-else-if="item.kind === 'steps'"><details class="tool-group" open><summary>{{ t("工具步骤（") }}{{ item.items.length }}）</summary><details v-for="(step,i) in item.items" :key="step.id || i" class="tool-card"><summary><span :class="['tool-status', step.status]"></span>{{ step.name }} <small>{{ step.status === 'running' ? t("运行中") : step.status === 'denied' ? t("已拒绝") : step.status === 'unknown' ? t("结果未知") : step.status }}</small><small v-if="step.approvalOrigin"> · {{ t(approvalLabels[step.approvalOrigin] || step.approvalOrigin) }}</small></summary><p v-if="step.approvalNote">{{ step.approvalNote }}</p><p v-if="step.approvalGrant">{{ t("授权：") }}{{ step.approvalGrant }}</p><pre>{{ JSON.stringify(step.args, null, 2) }}{{ '\n\n' + (step.preview || '') }}</pre><button v-if="step.approvalOrigin === 'reviewer_denied' && !step.overridden" class="btn" :disabled="running || !connected" @click="allowAnyway(step)">{{ t("仍然允许一次") }}</button></details></details></template>
+            <ToolTurnGroup v-else-if="item.kind === 'steps'" :items="item.items" :live="item.live" :streaming-text="item.live ? streaming : ''" :streaming-reasoning="item.live ? streamReasoning : ''" :busy="running" :connected="connected" @allow-anyway="allowAnyway" />
             <template v-else-if="item.kind === 'memory'"><div class="memory-notice"><strong>{{ item.undone ? t("已撤销记忆") : typeof item.previous==='string' ? t("已修改记忆") : t("已新增记忆") }}</strong><p>{{ item.text }}</p><button v-if="!item.undone" class="btn" :disabled="item.busy" @click="undoSavedMemory(item)">{{ t("撤销记忆") }}</button><p v-if="item.error" class="error-text" role="alert">{{ item.error }}</p></div></template>
             <template v-else-if="item.kind === 'notice'"><div class="notice-line">{{ item.text }} <button v-if="item.retriable" class="btn" :disabled="running || !connected" @click="socket.retry(); running = true">{{ t("重试") }}</button></div></template>
             <template v-else-if="item.kind === 'approval'"><div class="inline-card"><strong>{{ t("允许执行 ") }}{{ item.name }}？</strong><p>{{ item.reason || t("此操作需要你的确认。") }}</p></div></template>
             <template v-else-if="item.kind === 'question'"><div class="inline-card"><strong>{{ item.text }}</strong></div></template>
           </article>
-          <article v-if="streaming || streamReasoning" class="message assistant"><details v-if="streamReasoning" class="reasoning" open><summary>{{ t("思考过程") }}</summary><pre>{{ streamReasoning }}</pre></details><MarkdownView class="assistant-copy" :text="streaming" /><span v-if="streaming" class="cursor"></span></article>
-          <div v-if="running && (compacting || !streaming)" class="thinking-row"><span></span>{{ compacting ? t("正在压缩上下文…") : t("正在处理任务…") }}</div>
+          <article v-if="(streaming || streamReasoning) && !activeToolTurn" class="message assistant"><details v-if="streamReasoning" class="reasoning" open><summary>{{ t("思考过程") }}</summary><pre>{{ streamReasoning }}</pre></details><MarkdownView class="assistant-copy" :text="streaming" /><span v-if="streaming" class="cursor"></span></article>
+          <div v-if="running && (compacting || (!streaming && !activeToolTurn))" class="thinking-row"><span></span>{{ compacting ? t("正在压缩上下文…") : t("正在处理任务…") }}</div>
         </div>
       </div>
       <button v-if="!atBottom" class="btn return-bottom" @click="scrollBottom">{{ t("↓ 回到底部") }}</button>
@@ -826,14 +827,6 @@ onBeforeUnmount(() => {
       </section>
 
       <footer class="composer-area">
-        <details v-if="totalTokens" class="usage-totals"><summary>{{ t("累计用量 ") }}{{ totalTokens.toLocaleString() }} tokens</summary><div v-for="(row,name) in totals" :key="name">{{ name }}{{ t("：输入 ") }}{{ row.input }}{{ t(" · 输出 ") }}{{ row.output }}{{ t(" · 缓存读取 ") }}{{ row.cache_read }}{{ t(" · 缓存写入 ") }}{{ row.cache_write }}</div></details>
-        <div v-if="config.context_bar" class="context-usage" role="status">
-          <template v-if="usage && contextWindow">
-            <span>{{ t("上下文 ") }}{{ contextPercent }}% · {{ usage.tokens.toLocaleString() }} / {{ contextWindow.toLocaleString() }} tokens</span>
-            <progress :value="contextPercent" max="100" :aria-label="t(&quot;上下文使用进度&quot;)"></progress>
-          </template>
-          <span v-else>{{ usage ? (t("上下文 ") + (usage.tokens.toLocaleString()) + t(" tokens（模型容量未知）")) : t("上下文用量：等待模型返回数据") }}</span>
-        </div>
         <p v-if="attachmentError" class="error-text" role="alert">{{ t(attachmentError) }}</p>
         <div v-if="requiresWorkspace && (needsWorkspace || !messages.length) && !running && !sessionId.startsWith('__run__')" class="session-setup" data-testid="setup-row">
           <button class="workspace-chip" :class="{ required: needsWorkspace }" :title="workspace || t('选择工作目录')" :aria-label="t('选择工作目录')" @click="showWorkspacePicker"><span aria-hidden="true">▰</span><strong>{{ workspaceName || t("选择工作目录") }}</strong><span aria-hidden="true">⌄</span></button>
@@ -851,6 +844,7 @@ onBeforeUnmount(() => {
               <SelectMenu :model-value="mode" :options="modeOptions" icon="◉" :label="t(&quot;选择权限模式&quot;)" @change="changeMode" />
               <SelectMenu v-if="modelOptions.length" class="model-selector" :model-value="model" :options="modelOptions" icon="✦" :label="t(&quot;选择模型&quot;)" wide @change="changeModel" />
             </div>
+            <TokenUsage :key="sessionId" :usage="usage" :totals="totals" :context-window="contextWindow" :context-bar="config.context_bar" :model-labels="config.model_labels" />
             <button v-if="running" class="stop-button" :title="t(&quot;停止&quot;)" @click="socket.interrupt()">■</button>
             <button v-else class="send-button" :disabled="!canSend || needsWorkspace || !connected || !sessionReady" :title="t(&quot;发送&quot;)" :aria-label="t(&quot;发送&quot;)" @click="send">↑</button>
           </div>

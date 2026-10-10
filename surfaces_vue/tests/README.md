@@ -16,7 +16,7 @@ npm run test:browser
 
 ## 会话工作区验证范围
 
-会话工作区脚本覆盖 14 个浏览器场景，可运行 `node tests/conversation-workspace.browser.cjs` 单独验证。
+会话工作区脚本覆盖 15 个浏览器场景，可运行 `node tests/conversation-workspace.browser.cjs` 单独验证。
 
 - Markdown 标题、表格、代码、产物链接和危险 HTML/链接转义；历史图片恢复、CSV 引号/换行解析、跨模型用量累积。
 - 附件选择、移除、拖放、图片粘贴、PDF 页数检查、纯附件发送，以及发送前选择/取消工作目录后保留草稿、附件和技能。
@@ -24,11 +24,11 @@ npm run test:browser
 - Markdown、文本、图片、HTML、PDF、CSV、Excel 预览；目录浏览、系统打开请求及认证头。HTML 隔离预览验证不能访问父页面；PDF 验证实际 canvas 渲染。
 - 技能编辑、导入内容预览后确认安装、会话禁用、斜杠菜单和独立 skill 发送字段。
 - 重命名、置顶、归档、搜索键盘操作、布局持久化、分组数量限制。
-- 思考/回答流保留、错误重试、压缩状态、Token、Todo、工具分组、上滚阅读和回到底部。
+- 思考/回答流保留、错误重试、压缩状态、Token、Todo、上滚阅读和回到底部。工具过程按轮次归组并默认折叠，覆盖实时进展、动作摘要、审批合并、运行/失败状态、原始详情，以及过程说明和最终回答的分离。
 - 命令/只读会话/域名/MCP 审批值，审查拒绝后重试，计划反馈及模式，团队聊天、任务详情、目录读写回复，自动审批模式的授权限制。
 - 工作区信任/撤销、目录失败保留输入、权限切换、项目看板绑定、临时目录保存后重新连接；窄窗口文件面板无横向溢出。
 
-会话工作区失败截图为 `dist/conversation-workspace-failure.png`，通过时保留 `dist/conversation-workspace-files.png`、`dist/conversation-workspace-narrow.png` 和 `dist/conversation-workspace-setup.png` 供布局检查。产物均被 Git 忽略。
+会话工作区失败截图为 `dist/conversation-workspace-failure.png`，通过时保留 `dist/conversation-workspace-files.png`、`dist/conversation-workspace-narrow.png` 和 `dist/conversation-workspace-setup.png` 供布局检查。工具过程截图为 `dist/tool-turns-collapsed.png`、`dist/tool-turns-desktop.png` 和 `dist/tool-turns-mobile.png`。产物均被 Git 忽略。
 
 这些验证使用模拟服务：不会启动真实模型、打开系统文件管理器或安装实际技能。现有后端接口与 React 参考实现经过静态核对；真实办公任务仍需在用户的本地服务中联调。
 
@@ -53,7 +53,7 @@ npm run test:browser
 
 ## 设置与引导验证范围
 
-当前共 32 项 Node 测试。基础功能、会话工作区、集成与工作流、设置与引导分别覆盖 6、14、13、12 个浏览器场景，另有 Linear 风格布局回归。`npm run test:browser` 依次运行五个脚本；也可运行 `node tests/settings-setup.browser.cjs` 单独验证设置与引导。
+当前共 36 项 Node 测试。基础功能、会话工作区、集成与工作流、设置与引导分别覆盖 6、15、13、12 个浏览器场景，另有 Linear 风格布局回归。`npm run test:browser` 依次运行五个脚本；也可运行 `node tests/settings-setup.browser.cjs` 单独验证设置与引导。
 
 - 智能体目录、ZIP、Git 和图库安装的请求协议；失败保留输入、能力确认后启用、默认角色、显示控制、默认连接器、导出和删除失败重试。截图通过携带认证头的请求加载。
 - 提供商条件字段和默认值；验证失败不保存，保存失败保留凭据，成功后清除秘密字段；推荐模型、模型显示标签和账号登录/退出。

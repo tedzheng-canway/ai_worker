@@ -157,12 +157,18 @@ if (require.main === module) (async () => {
       await expect(page.getByLabel('服务器名称')).toHaveCount(0);
     });
     await check('history denial, live usage, sidebar count and settings synchronization', async ({ page, state }) => {
-      await expect(page.locator('.tool-card summary')).toContainText('已拒绝');
-      await page.locator('.tool-card summary').click();
-      await expect(page.locator('.tool-card')).toContainText('风险过高');
-      await expect(page.locator('.context-usage')).toContainText('30%');
+      await expect(page.locator('.turn-summary')).toContainText('已拒绝');
+      await expect(page.locator('.tool-turn')).not.toHaveAttribute('open', '');
+      await page.locator('.turn-summary').click();
+      await expect(page.getByTestId('reviewer-deny-card')).toContainText('风险过高');
+      await expect(page.getByTestId('usage-chip')).toContainText('30%');
+      await page.getByTestId('usage-chip').click();
+      await expect(page.getByRole('progressbar', { name: '上下文使用进度' })).toHaveAttribute('aria-valuenow', '30');
+      await expect(page.locator('.usage-metrics')).toContainText('200');
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('usage-popover')).toHaveCount(0);
       state.emit('s1', 'assistant_message', { text: 'hello', usage: { model: 'test:one', input: 500 } });
-      await expect(page.locator('.context-usage')).toContainText('50%');
+      await expect(page.getByTestId('usage-chip')).toContainText('50%');
       await page.getByRole('button', { name: '显示更多（2）' }).click();
       await expect(page.locator('.session-row')).toHaveCount(4);
       state.emit('s1', 'ready', { running: false, model: 'test:one', mode: 'auto-approve' });
@@ -175,7 +181,8 @@ if (require.main === module) (async () => {
       await page.getByLabel('显示上下文使用进度').uncheck();
       await expect(page.locator('.save-toast')).toBeVisible();
       await page.locator('.session-row').first().click();
-      await expect(page.locator('.context-usage')).toHaveCount(0);
+      await expect(page.locator('.usage-ring')).toHaveCount(0);
+      await expect(page.getByTestId('usage-chip')).toContainText('300');
       await page.getByRole('button', { name: '选择权限模式' }).click();
       await expect(page.getByRole('option').filter({ hasText: '自动审批' })).toHaveCount(0);
     });

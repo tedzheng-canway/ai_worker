@@ -9,11 +9,57 @@ export const usageTotals = (rows) => rows.filter(r => r.role === 'assistant').re
 // The backend todo_write schema uses "done"; the progress UI uses "completed".
 // Normalize both live tool arguments and restored history at this boundary.
 export const normalizeTodos = (items) => (Array.isArray(items) ? items : []).map((item) => typeof item === 'string' ? { content: item, status: 'pending' } : { content: item.content || item.title || '', status: item.status === 'done' ? 'completed' : item.status || 'pending' });
-export function transcriptGroups(items) {
+const pendingKinds = new Set(['approval', 'question', 'dirreq', 'toolreq', 'planreq', 'teamreq', 'itemsreq']);
+
+// Match the reference transcript: narration, tools and resolved approvals form a turn.
+// Its final answer leaves the group only once the turn is no longer live.
+export function transcriptGroups(items, running = false) {
   const groups = [];
-  for (const item of items) {
-    if (item.kind === 'tool' && groups.at(-1)?.kind === 'steps') groups.at(-1).items.push(item);
-    else groups.push(item.kind === 'tool' ? { kind: 'steps', items: [item] } : item);
+  let turn = [], start = 0;
+  function flush(live = false) {
+    if (!turn.length) return;
+    const entries = [...turn], answers = [];
+    if (!(live && entries.some(item => item.kind !== 'assistant'))) {
+      while (entries.at(-1)?.kind === 'assistant') answers.unshift(entries.pop());
+    }
+    if (entries.some(item => item.kind !== 'assistant')) groups.push({ kind: 'steps', key: `turn-${start}`, items: entries, live });
+    else groups.push(...entries);
+    groups.push(...answers);
+    turn = [];
   }
+  items.forEach((item, index) => {
+    if (item.kind === 'tool' || item.kind === 'assistant' || (item.kind === 'approval' && item.resolved)) {
+      if (!turn.length) start = index;
+      turn.push(item);
+    } else if (!(pendingKinds.has(item.kind) && !item.resolved)) {
+      flush();
+      groups.push(item);
+    }
+  });
+  flush(running);
   return groups;
+}
+
+export const isToolRunning = status => status === 'running' || status === '…';
+export const isDeclined = value => value === 'deny' || value === 'denied';
+
+// Pair a resolved approval with the closest matching call, keeping declined or
+// unexecuted requests as their own intent rows, just as the reference frontend does.
+export function turnRows(items) {
+  const rows = items.filter(item => item.kind !== 'approval' && (item.kind !== 'assistant' || item.text || item.reasoning))
+    .map(item => item.kind === 'assistant' ? { kind: 'narration', item } : { kind: 'step', item });
+  for (const approval of items.filter(item => item.kind === 'approval')) {
+    const position = items.indexOf(approval);
+    const match = rows.filter(row => row.kind === 'step' && row.item.name === approval.name && !row.approval)
+      .sort((a, b) => Math.abs(items.indexOf(a.item) - position) - Math.abs(items.indexOf(b.item) - position))[0];
+    if (match && !isDeclined(approval.resolved)) match.approval = approval;
+    else {
+      const after = items.slice(0, position).filter(item => item.kind !== 'approval' && (item.kind !== 'assistant' || item.text || item.reasoning));
+      const before = [...after].reverse().find(item => rows.some(row => row.item === item));
+      let at = before ? rows.findIndex(row => row.item === before) + 1 : 0;
+      while (rows[at]?.kind === 'ask') at++;
+      rows.splice(at, 0, { kind: 'ask', item: approval });
+    }
+  }
+  return rows;
 }
