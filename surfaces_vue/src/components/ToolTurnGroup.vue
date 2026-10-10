@@ -4,6 +4,7 @@ import { t } from '../i18n';
 import { isDeclined, isToolRunning, turnRows } from '../sessionState';
 import MarkdownView from './MarkdownView.vue';
 import ToolStepRow from './ToolStepRow.vue';
+import ResponseMeta from './ResponseMeta.vue';
 
 const props = defineProps({ items: { type: Array, required: true }, live: Boolean, streamingText: String, streamingReasoning: String, busy: Boolean, connected: Boolean });
 const emit = defineEmits(['allow-anyway']);
@@ -30,6 +31,7 @@ const liveLine = computed(() => props.streamingText || [...props.items].reverse(
         <div v-if="row.kind === 'narration'" class="turn-narration" data-testid="turn-narration">
           <details v-if="row.item.reasoning" class="reasoning"><summary>{{ t('思考过程') }}</summary><pre>{{ row.item.reasoning }}</pre></details>
           <MarkdownView v-if="row.item.text" :text="row.item.text" />
+          <ResponseMeta :item="row.item" />
         </div>
         <ToolStepRow v-else :step="row.item" :approval="row.approval" :intent="row.kind === 'ask'" :busy="busy" :connected="connected" @allow-anyway="emit('allow-anyway', $event)" />
       </template>

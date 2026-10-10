@@ -136,6 +136,27 @@ def _ensure_api_token(port: int) -> Path | None:
     )
 
 
+_ENGINE_LOCK = None
+
+
+def _warn_if_state_shared() -> None:
+    """Refuse duplicate writers by default; COWORKER_STATE_LOCK=warn opts into a warning.
+
+    Electron always uses strict mode. A separate service should use its own state
+    directory, or stop the existing server before taking over the same directory.
+    """
+    global _ENGINE_LOCK
+    from ..statelock import EngineBusy, acquire
+
+    strict = os.environ.get("COWORKER_STATE_LOCK", "strict") != "warn"
+    try:
+        _ENGINE_LOCK = acquire(state_dir(), timeout=10.0 if strict else 0.0)
+    except EngineBusy as exc:
+        print(f"{'error' if strict else 'warning'}: {exc}", file=sys.stderr)
+        if strict:
+            raise SystemExit(3) from exc
+
+
 def main(argv=None) -> None:
     _ensure_ca_bundle()
     cfg = load_config()  # global config supplies defaults
@@ -156,16 +177,22 @@ def main(argv=None) -> None:
     # a random free port (to coexist with a hand-run server on 8765), so the
     # managed-connect redirect must follow the real port, not the 8765 default.
     os.environ["COWORKER_PORT"] = str(args.port)
-    generated_token_path = _ensure_api_token(args.port)
+    generated_token_path = None
     try:
         import uvicorn
 
         _exit_when_orphaned()
+        _warn_if_state_shared()
+        generated_token_path = _ensure_api_token(args.port)
         app = build_app(args.cwd, args.model, args.mode)
         uvicorn.run(
             app, host=args.host, port=args.port, ws_max_size=_WS_MAX_FRAME_BYTES
         )
     finally:
+        global _ENGINE_LOCK
+        if _ENGINE_LOCK is not None:
+            _ENGINE_LOCK.release()
+            _ENGINE_LOCK = None
         if generated_token_path is not None:
             generated_token_path.unlink(missing_ok=True)
             os.environ.pop("COWORKER_API_TOKEN", None)

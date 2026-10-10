@@ -1,5 +1,5 @@
-// Reuse the reference frontend's existing Playwright installation; no backend is started.
-const { chromium, expect } = require('../../surfaces/gui/node_modules/@playwright/test');
+// Vue-specific browser fixtures; no backend or reference React checkout is required.
+const { chromium, expect } = require('@playwright/test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
 const fs = require('node:fs');
@@ -120,9 +120,11 @@ if (require.main === module) (async () => {
       await expect(page.locator('.save-toast')).toHaveCount(0);
       await expect(pct).toHaveValue('85');
       state.rejectCompaction = false;
+      await page.getByLabel('摘要输出预算（tokens）').fill('24000');
       await page.getByRole('button', { name: '保存压缩设置' }).click();
       await expect(page.locator('.save-toast')).toContainText('已保存');
       assert.equal(state.settings.compaction_threshold_pct, 0.85);
+      assert.equal(state.settings.compaction_summary_max_tokens, 24000);
       await page.getByLabel('回退模式').selectOption('images');
       await page.getByLabel('最大页数').fill('30');
       state.rejectPdf = true;
@@ -137,6 +139,7 @@ if (require.main === module) (async () => {
       await page.locator('.surface-nav').getByRole('button', { name: '设置' }).click();
       await page.locator('.subnav').getByRole('button', { name: '上下文', exact: true }).click();
       await expect(pct).toHaveValue('85');
+      await expect(page.getByLabel('摘要输出预算（tokens）')).toHaveValue('24000');
       await expect(page.getByLabel('回退模式')).toHaveValue('images');
       await expect(page.getByLabel('最大页数')).toHaveValue('30');
     });

@@ -1,4 +1,8 @@
 import { historyAttachments } from './attachments.js';
+export const truncatedText = '输出多次达到上限，任务尚未完成。可提高输出上限、降低推理强度后重试。';
+export function assistantMeta(row = {}) {
+  return { finishReason: row.finish_reason, maxOutputTokens: row.max_output_tokens, reasoningEffort: row.reasoning_effort };
+}
 export function contentText(content) {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return content ? JSON.stringify(content, null, 2) : "";
@@ -21,9 +25,12 @@ export function historyItems(rows) {
   const tools = new Map(rows.filter((row) => row.role === "tool" && row.tool_call_id).map((row) => [row.tool_call_id, row]));
   const result = [];
   for (const row of rows) {
-    if (row.role === "user") result.push(row.source?.connector ? { kind:'connector', source:row.source, text:row.source.text || contentText(row.content), ts:row.source.ts || row.ts } : { kind: "user", text: typeof row._display === "string" ? row._display : contentText(row.content), attachments: historyAttachments(row.content), ts: row.ts });
+    if (row.role === "user") {
+      if (row._display?.kind === 'continuation') result.push({ kind: 'continuation', attempt: row._display.attempt, ts: row.ts });
+      else result.push(row.source?.connector ? { kind:'connector', source:row.source, text:row.source.text || contentText(row.content), ts:row.source.ts || row.ts } : { kind: "user", text: typeof row._display === "string" ? row._display : contentText(row.content), attachments: historyAttachments(row.content), ts: row.ts });
+    }
     if (row.role === "assistant") {
-      if (row.content || row.reasoning) result.push({ kind: "assistant", text: contentText(row.content), reasoning: row.reasoning, ts: row.ts });
+      if (row.content || row.reasoning || row.finish_reason === 'length') result.push({ kind: "assistant", text: contentText(row.content), reasoning: row.reasoning, ts: row.ts, ...assistantMeta(row) });
       for (const call of row.tool_calls || []) {
         let args = {};
         try { args = JSON.parse(call.function?.arguments || "{}"); } catch {}
@@ -34,9 +41,12 @@ export function historyItems(rows) {
           status: denied ? "denied" : tool ? "ok" : "unknown", preview: contentText(tool?.content), ...meta });
       }
     }
-    if (row.role === "notice") result.push({ kind: "notice", text: row.text || row.content || "系统提示" });
+    if (row.role === "notice") {
+      if (row.kind === 'compacted') result.push({ kind: 'compaction', record: row.compaction || {}, text: row.text });
+      else result.push({ kind: 'notice', text: row.kind === 'truncated' ? truncatedText : row.kind === 'interrupted' ? '已停止生成' : row.text || row.content || '系统提示', retriable: ['error', 'truncated'].includes(row.kind) });
+    }
   }
-  return result.filter((item) => item.text || item.kind === "connector" || item.kind === "tool" || item.reasoning || item.attachments?.length);
+  return result.filter((item) => item.text || ['connector', 'tool', 'continuation', 'compaction'].includes(item.kind) || item.finishReason === 'length' || item.reasoning || item.attachments?.length);
 }
 
 export const approvalLabels = { user: "用户审批", reviewer: "自动审查", reviewer_denied: "自动审查拒绝", user_denied: "用户拒绝", bypass: "绕过审批" };

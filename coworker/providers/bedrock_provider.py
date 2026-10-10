@@ -395,6 +395,7 @@ class _BedrockConverseClient(ProviderClient):
             raw=response,
             reasoning="".join(reasoning_parts) or None,
             usage=_usage_from(response.get("usage")),
+            output_limit=kwargs["inferenceConfig"].get("maxTokens"),
         )
 
     def stream(
@@ -460,6 +461,7 @@ class _BedrockConverseClient(ProviderClient):
                 finish_reason=_STOP_REASON_MAP.get(stop_reason, stop_reason),
                 reasoning="".join(reasoning_parts) or None,
                 usage=usage,
+                output_limit=kwargs["inferenceConfig"].get("maxTokens"),
             )
         )
 

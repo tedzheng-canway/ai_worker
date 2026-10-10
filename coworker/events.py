@@ -41,6 +41,7 @@ class EventType(str, Enum):
     INTERRUPTED = "interrupted"
     COMPACTING = "compacting"  # compaction started — surfaces show a transient signal
     COMPACTED = "compacted"  # outbound history was compacted (summary or trim)
+    CONTINUATION = "continuation"  # retrying an action-free reply cut off by the output limit
 
 
 @dataclass

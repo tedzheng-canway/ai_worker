@@ -98,8 +98,9 @@ onBeforeUnmount(()=>{disposed=true;clearTimeout(timer);clearTimeout(returnTimer)
         </form>
       </fieldset>
       <div class="provider-feedback"><p v-if="error || info.last_error" class="error-text" role="alert">{{ t(error || info.last_error) }}</p><p v-else-if="message" role="status">{{ t(message) }}</p></div>
-      <button v-if="credentialed&&info.auth!=='oauth'&&!onboarding" class="provider-remove" :disabled="busy" @click="forget">{{ t('移除密钥…') }}</button>
-      <p v-if="info.name==='openai'&&settings.source==='env'" class="provider-help">{{ t('此服务器的环境中已通过 OPENAI_API_KEY 设置密钥。在此添加其他密钥可覆盖本机设置。') }}</p>
+      <button v-if="credentialed&&info.key_source!=='env'&&info.auth!=='oauth'&&!onboarding" class="provider-remove" :disabled="busy" @click="forget">{{ t('移除密钥…') }}</button>
+      <p v-if="info.key_source==='env'" class="provider-help" data-testid="provider-key-source">{{ t('密钥来自服务器环境变量：') }} <code>{{ info.env_key }}</code>。{{ t('如需移除，请修改环境变量并重启服务；在此保存密钥可覆盖它。') }}</p>
+      <p v-else-if="info.key_source==='store'" class="provider-help">{{ t('密钥已保存在本机。') }}<template v-if="info.env_key">{{ t('移除后将使用环境变量：') }} <code>{{ info.env_key }}</code></template></p>
       <ProviderModels v-if="!onboarding" :settings="settings" :providers="providers" :provider="info" :busy="busy" @change="act(refresh)" @error="error=$event" />
     </template>
   </div>

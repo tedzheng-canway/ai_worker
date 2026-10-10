@@ -182,6 +182,24 @@ npm run dev
 
 全局配置位于状态目录下的 `config.toml`，工作区配置位于 `<工作区>/.coworker/config.toml`。设置自定义状态目录时，前后端终端需要使用相同的 `COWORKER_STATE_DIR`。
 
+后端默认对状态目录持有进程锁；同一目录已被使用时等待最多 10 秒，随后以退出码 `3` 拒绝重复启动。Electron 固定使用严格模式。独立服务优先配置不同的状态目录；确需兼容旧启动方式时可显式设置 `COWORKER_STATE_LOCK=warn`，此模式只记录竞争告警，不能保证状态目录并发写入安全。凭据写入和 OAuth 刷新另有跨进程事务锁，取得锁后会重读最新凭据，锁超时拒绝写入。
+
+后端新增以下配置，环境变量优先于 TOML：
+
+| TOML 字段 | 环境变量 | 默认值及作用 |
+| --- | --- | --- |
+| `max_output_tokens` | `COWORKER_MAX_OUTPUT_TOKENS` | 未设置时沿用提供商默认；设置正整数输出上限 |
+| `reasoning_effort` | `COWORKER_REASONING_EFFORT` | 可选 `none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`，按提供商能力映射 |
+| `tool_result_max_bytes` | `COWORKER_TOOL_RESULT_MAX_BYTES` | `10000` 字节；`0` 关闭结果预算 |
+| `compaction_cap_tokens` | `COWORKER_COMPACTION_CAP_TOKENS` | `250000`，压缩触发上限；同时受模型窗口比例限制 |
+| `compaction_summary_max_tokens` | `COWORKER_COMPACTION_SUMMARY_MAX_TOKENS` | `16000`，摘要模型输出上限 |
+
+设置页保存的压缩参数优先于上述配置，并对现有会话生效。超限工具结果的全文和被压缩历史保存在会话临时目录的 `tool-output` 下；模型可通过返回路径回读，界面也可打开压缩记录中的全文。摘要会保留最初任务、近期用户修正、工作状态及省略计数。
+
+输出达到提供商上限且没有工具行动时自动续接，连续最多两次；仍未完成则显示“输出已截断”，可以重试，自动化不会因此记为成功。停止会话会持久化停止状态并取消旧提醒，新的用户输入可以继续会话。`current_time` 和 `runtime_context` 分别提供按需时间与有限环境信息，环境发现不读取 `.env` 或凭据内容。
+
+模型管理显示密钥来自应用保存还是环境变量；环境变量密钥需在启动环境中修改，因此隐藏移除按钮。Telegram 审批人可在连接器账号页配置；私聊默认仅允许该聊天用户处理审批，群聊需要显式审批人，同时校验审批绑定的聊天和渠道。
+
 前端支持以下环境变量：
 
 | 环境变量 | 用途 |

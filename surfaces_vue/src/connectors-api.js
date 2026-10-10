@@ -11,3 +11,4 @@ export const resolveUnauthorized = (name,id,action) => connectorAction(name, `un
 export const slackDirectory = (team, q='') => request(`/v1/connectors/slack/workspaces/${enc(team)}/directory?${new URLSearchParams({q})}`);
 export const slackChannels = (team, q='') => request(`/v1/connectors/slack/workspaces/${enc(team)}/channels?${new URLSearchParams({q})}`);
 export const slackOwner = (user_id, action, name) => connectorAction('slack', `approval-owners/${action}`, {user_id,...(name ? {name}: {})});
+export const telegramOwner = (user_id, action, name) => connectorAction('telegram', `approval-owners/${action}`, {user_id,...(name ? {name}: {})});

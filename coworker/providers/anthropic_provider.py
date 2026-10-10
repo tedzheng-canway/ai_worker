@@ -23,6 +23,7 @@ import json
 import re
 from typing import Any, Optional
 
+from .effort import EffortPlan, anthropic_effort, mentions_effort
 from .base import (
     AssistantTurn,
     ModelCapabilities,
@@ -400,6 +401,7 @@ class AnthropicProvider(ProviderClient):
         self._secrets = secrets
         self.default_model = default_model
         self.thinking_budget = thinking_budget or 0
+        self._effort_rejected: set[str] = set()
 
     def _ensure_client(self) -> Any:
         if self._client is None:
@@ -422,6 +424,7 @@ class AnthropicProvider(ProviderClient):
         messages: list[dict[str, Any]],
         tools: Optional[list[dict[str, Any]]],
         settings: dict[str, Any],
+        effort: Optional[EffortPlan] = None,
     ) -> dict[str, Any]:
         system, converted = convert_messages(messages)
         if "stop" in settings and "stop_sequences" not in settings:
@@ -438,6 +441,8 @@ class AnthropicProvider(ProviderClient):
                 # 4.6+/Claude 5 family: adaptive only (budget_tokens 400s on 4.7+);
                 # display opt-in or the trace text arrives empty.
                 filtered["thinking"] = {"type": "adaptive", "display": "summarized"}
+        if effort is not None and effort.params:
+            filtered.update(effort.params)
         thinking = filtered.get("thinking") or {}
         if thinking.get("type") == "enabled":
             # Budget must fit under max_tokens.
@@ -466,8 +471,9 @@ class AnthropicProvider(ProviderClient):
         tools: Optional[list[dict[str, Any]]] = None,
         **settings: Any,
     ) -> AssistantTurn:
+        plan = self._effort_plan(model, settings)
         kwargs = self._request_kwargs(
-            model=model, messages=messages, tools=tools, settings=settings
+            model=model, messages=messages, tools=tools, settings=settings, effort=plan
         )
         client = self._ensure_client()
         # Stream-and-accumulate, not a plain create: the SDK REFUSES non-streaming
@@ -477,16 +483,16 @@ class AnthropicProvider(ProviderClient):
         # for every Anthropic model (found by the 2026-08-31 eval run; fail-closed,
         # so verdicts fell back to asking a human). get_final_message() returns the
         # same Message shape create() would.
-        if _needs_refusal_fallback(model):
-            with client.beta.messages.stream(
-                **kwargs,
-                betas=[_FALLBACK_BETA],
-                fallbacks=[{"model": _FALLBACK_MODEL}],
-            ) as stream:
-                response = stream.get_final_message()
-        else:
-            with client.messages.stream(**kwargs) as stream:
-                response = stream.get_final_message()
+        def _open(kw):
+            if _needs_refusal_fallback(model):
+                with client.beta.messages.stream(
+                    **kw, betas=[_FALLBACK_BETA], fallbacks=[{"model": _FALLBACK_MODEL}],
+                ) as stream:
+                    return stream.get_final_message()
+            with client.messages.stream(**kw) as stream:
+                return stream.get_final_message()
+
+        response, kwargs, fallback_note = self._call_with_effort_fallback(model, kwargs, _open)
 
         text_parts: list[str] = []
         tool_calls: list[ToolCall] = []
@@ -528,7 +534,41 @@ class AnthropicProvider(ProviderClient):
             reasoning=_reasoning_text(thinking_blocks),
             extras=_thinking_extras(thinking_blocks),
             usage=_usage_from(getattr(response, "usage", None)),
+            output_limit=kwargs.get("max_tokens"),
+            effort=_effort_record(plan, fallback_note),
         )
+
+    def _effort_plan(self, model: str, settings: dict[str, Any]) -> Optional[EffortPlan]:
+        level = settings.get("reasoning_effort")
+        if not level:
+            return None
+        if model in self._effort_rejected:
+            return EffortPlan(
+                str(level),
+                None,
+                {},
+                "endpoint rejected output_config.effort earlier in this run; not sent",
+            )
+        return anthropic_effort(model, str(level), budget_mode=_uses_budget_thinking(model))
+
+
+    def _call_with_effort_fallback(self, model: str, kwargs: dict[str, Any], fn: Any):
+        """Run `fn(kwargs)`; if the endpoint rejects the effort parameter (HTTP 400 naming
+        it), drop it, remember the model, and run once more. Returns (result, kwargs
+        actually used, fallback note or None). Any other error propagates unchanged."""
+        try:
+            return fn(kwargs), kwargs, None
+        except Exception as exc:
+            if "output_config" in kwargs and mentions_effort(exc):
+                self._effort_rejected.add(model)
+                retry = {k: v for k, v in kwargs.items() if k != "output_config"}
+                return (
+                    fn(retry),
+                    retry,
+                    "endpoint rejected output_config.effort; resent without it",
+                )
+            raise
+
 
     def capabilities(self, model: str) -> ModelCapabilities:
         return capabilities_for(model)
@@ -541,19 +581,20 @@ class AnthropicProvider(ProviderClient):
         tools: Optional[list[dict[str, Any]]] = None,
         **settings: Any,
     ):
+        plan = self._effort_plan(model, settings)
         kwargs = self._request_kwargs(
-            model=model, messages=messages, tools=tools, settings=settings
+            model=model, messages=messages, tools=tools, settings=settings, effort=plan
         )
         kwargs["stream"] = True
         client = self._ensure_client()
-        if _needs_refusal_fallback(model):
-            events = client.beta.messages.create(
-                **kwargs,
-                betas=[_FALLBACK_BETA],
-                fallbacks=[{"model": _FALLBACK_MODEL}],
-            )
-        else:
-            events = client.messages.create(**kwargs)
+        def _open(kw):
+            if _needs_refusal_fallback(model):
+                return client.beta.messages.create(
+                    **kw, betas=[_FALLBACK_BETA], fallbacks=[{"model": _FALLBACK_MODEL}],
+                )
+            return client.messages.create(**kw)
+
+        events, kwargs, fallback_note = self._call_with_effort_fallback(model, kwargs, _open)
 
         text_parts: list[str] = []
         tool_accum: dict[int, dict[str, str]] = {}
@@ -649,5 +690,15 @@ class AnthropicProvider(ProviderClient):
                 reasoning=_reasoning_text(thinking_blocks),
                 extras=_thinking_extras(thinking_blocks),
                 usage=usage,
+                output_limit=kwargs.get("max_tokens"),
+                effort=_effort_record(plan, fallback_note),
             )
         )
+
+
+def _effort_record(plan: Optional[EffortPlan], fallback_note: Optional[str]) -> Optional[dict[str, Any]]:
+    if plan is None:
+        return None
+    if fallback_note:
+        return plan.without_param(fallback_note).record()
+    return plan.record()

@@ -322,6 +322,7 @@ class SessionManager:
         self.inbox_routing = InboxRouting(base / "inbox_routing.json")
         self.unattended = UnattendedRegistry(base / "unattended.json")
         self.wakes = WakeStore(base / "wakes.json")
+        self._activity_acknowledged: set[str] = set()
         # Channel subscriptions (inbound): persisted (session_id, channel) records + a ring buffer
         # of recently-seen channel messages for get_channel_messages.
         self.subscriptions = SubscriptionStore(base / "subscriptions.json")
@@ -591,6 +592,7 @@ class SessionManager:
         team_approver: Optional[Any] = None,
         items_approver: Optional[Any] = None,
     ) -> Optional[TurnEngine]:
+        self.reconcile_activity_receipts(session_id)
         engine = self._engines.get(session_id)
         if engine is not None:
             if approver is not None:
@@ -2358,6 +2360,8 @@ class SessionManager:
 
     def _lead_backstop_due(self, team) -> bool:
         sid = team.lead_session
+        if sid in self.wakes.stopped_sessions:
+            return False
         if self.is_running(sid) or sid in self._team_inflight:
             return False
         if self.wakes.pending(sid):
@@ -2404,6 +2408,9 @@ class SessionManager:
     async def _drain_team_member(
         self, team, *, session_id: str, actor: str, is_lead: bool
     ) -> int:
+        self.reconcile_activity_receipts(session_id)
+        if session_id in self.wakes.stopped_sessions:
+            return 0
         # Interest follows the assignment relation: everyone's feed is the events
         # on their slice (assigned ∪ filed) — comments, moves, reassignments. The
         # lead additionally subscribes to the board-wide decision classes.
@@ -2455,25 +2462,22 @@ class SessionManager:
         )
         self._team_inflight.add(session_id)
         source = self._board_source(team, message, rows=rows)
+        delivered = [e["seq"] for e in directs] + [e["seq"] for e in subs]
+        receipt = {
+            "space": team.space,
+            "actor": actor,
+            "direct_seq": max(delivered, default=0),
+            "subscription_seq": max((e["seq"] for e in subs), default=0),
+            "chat_group": team.chat_group,
+            "chat_handle": chat_handle,
+            "chat_seq": max((e["seq"] for e in chats), default=0),
+        }
 
         async def _deliver() -> None:
             try:
-                await self.deliver_to_session(session_id, message, source=source)
-                # Consume only after the turn dispatched: a crash before this replays
-                # the batch next tick (at-least-once, never silently lost).
-                # The feed cursor advances past BOTH batches: a subs event deduped
-                # out of directs must not replay as a direct next tick.
-                delivered = [e["seq"] for e in directs] + [e["seq"] for e in subs]
-                if delivered:
-                    self.team_store.consume_feed(team.space, actor, max(delivered))
-                if subs:
-                    self.team_store.consume_subscription(
-                        team.space, actor, subs[-1]["seq"]
-                    )
-                if chats:
-                    self.chat_store.consume(
-                        team.chat_group, chat_handle, chats[-1]["seq"]
-                    )
+                await self.deliver_to_session(
+                    session_id, message, source=source, board_receipt=receipt
+                )
             finally:
                 self._team_inflight.discard(session_id)
 
@@ -2993,6 +2997,7 @@ class SessionManager:
         for d in provider_descriptors():
             profile = self.secrets.get(f"provider:{d.name}") or {}
             configured = descriptor_configured(d, profile)
+            env_var = d.env_key if d.env_key and os.environ.get(d.env_key) else None
             values = {
                 f.key: profile.get(f.key)
                 for f in d.fields
@@ -3001,6 +3006,8 @@ class SessionManager:
             row = {
                 **d.to_dict(),
                 "configured": configured,
+                "key_source": "store" if profile.get("api_key") else ("env" if env_var else None),
+                "env_key": env_var,
                 "values": values,
                 "suggested_models": self._suggested_models(d.name),
                 # Key hygiene for the Settings pane: when the key was saved (date, stamped
@@ -3158,9 +3165,16 @@ class SessionManager:
         d = get_descriptor(name)
         if d is None:
             return {"ok": False, "error": f"unknown provider: {name}"}
+        env_var = d.env_key if d.env_key and os.environ.get(d.env_key) else None
+        stored = (self.secrets.get(f"provider:{name}") or {}).get("api_key")
+        if env_var and not stored:
+            return {
+                "ok": False, "provider": name, "env_key": env_var,
+                "error": f"The key comes from {env_var} in the server environment. Remove it there and restart the server.",
+            }
         self.secrets.delete(f"provider:{name}")
         self._refresh_provider(name)
-        return {"ok": True, "provider": name}
+        return {"ok": True, "provider": name, "env_key": env_var, "key_source": "env" if env_var else None}
 
     # -- ChatGPT-subscription provider (OAuth, no key) ---------------------------
     def begin_codex_signin(self) -> None:
@@ -3579,15 +3593,17 @@ class SessionManager:
         """The live auto-compaction knobs (OPE-27) — read by every engine per check, so a
         Settings change applies without a rebuild. Only the two spec'd overrides plus the
         summarizer-model pin; absent keys fall back to compaction.py defaults."""
-        from ..compaction import DEFAULT_CAP_TOKENS, DEFAULT_THRESHOLD_PCT
+        from ..compaction import DEFAULT_CAP_TOKENS, DEFAULT_THRESHOLD_PCT, SUMMARY_MAX_TOKENS
+        config = load_config()
 
         return {
             "threshold_pct": float(
                 self._prefs.get("compaction_threshold_pct") or DEFAULT_THRESHOLD_PCT
             ),
             "cap_tokens": int(
-                self._prefs.get("compaction_cap_tokens") or DEFAULT_CAP_TOKENS
+                self._prefs.get("compaction_cap_tokens") or config.compaction_cap_tokens or DEFAULT_CAP_TOKENS
             ),
+            "summary_max_tokens": int(self._prefs.get("compaction_summary_max_tokens") or config.compaction_summary_max_tokens or SUMMARY_MAX_TOKENS),
             # "" → the session's own model (engine falls back to self.model).
             "model": str(self._prefs.get("compaction_model") or ""),
         }
@@ -3599,6 +3615,7 @@ class SessionManager:
             "compaction_threshold_pct": settings["threshold_pct"],
             "compaction_cap_tokens": settings["cap_tokens"],
             "compaction_model": settings["model"],
+            "compaction_summary_max_tokens": settings["summary_max_tokens"],
         }
 
     def set_compaction_settings(
@@ -3606,11 +3623,13 @@ class SessionManager:
         threshold_pct: Any = None,
         cap_tokens: Any = None,
         model: Any = None,
+        summary_max_tokens: Any = None,
     ) -> dict[str, Any]:
         """Persist the auto-compaction overrides (OPE-27). Threshold is a percentage of
         the model's context window (10–95); the cap is an absolute token ceiling; model
         pins the summarizer ('' → the session's own model). Engines read these live via
         `compaction_settings()`, so changes apply to running sessions immediately."""
+        updates = {}
         if threshold_pct is not None:
             try:
                 pct = float(threshold_pct)
@@ -3621,16 +3640,21 @@ class SessionManager:
                     "ok": False,
                     "error": "compaction_threshold_pct must be between 0.10 and 0.95",
                 }
-            self._prefs["compaction_threshold_pct"] = pct
+            updates["compaction_threshold_pct"] = pct
         if cap_tokens is not None:
             try:
-                self._prefs["compaction_cap_tokens"] = max(
+                updates["compaction_cap_tokens"] = max(
                     10_000, min(int(cap_tokens), 2_000_000)
                 )
             except (TypeError, ValueError):
                 return {"ok": False, "error": "compaction_cap_tokens must be a number"}
         if model is not None:
-            self._prefs["compaction_model"] = str(model)
+            updates["compaction_model"] = str(model)
+        if summary_max_tokens is not None:
+            if isinstance(summary_max_tokens, bool) or not isinstance(summary_max_tokens, int) or not 1 <= summary_max_tokens <= 200_000:
+                return {"ok": False, "error": "compaction_summary_max_tokens must be an integer between 1 and 200000"}
+            updates["compaction_summary_max_tokens"] = summary_max_tokens
+        self._prefs.update(updates)
         self._save_prefs()
         return {"ok": True, **self.compaction_settings()}
 
@@ -3730,6 +3754,8 @@ class SessionManager:
                 "ok": False,
                 "error": "Remove this person as an approval owner first.",
             }
+        if name == "telegram" and str(user_id) in self.telegram_approval_owner_ids():
+            return {"ok": False, "error": "Remove this person as an approval owner first."}
         return self._set_allowed(name, user_id, team_id=team_id, add=False)
 
     def slack_approval_owner_ids(self, team_id: Optional[str] = None) -> set[str]:
@@ -3750,6 +3776,80 @@ class SessionManager:
             for user_id in (profile.get("approval_owner_ids") or [])
             if str(user_id).strip()
         }
+
+    def telegram_approval_owner_ids(self) -> set[str]:
+        profile = self.secrets.get("telegram:default") or {}
+        return {
+            str(user_id).strip()
+            for user_id in (profile.get("approval_owner_ids") or [])
+            if str(user_id).strip()
+        }
+
+
+    def set_telegram_approval_owner(
+        self, user_id: str, *, add: bool, display_name: str = ""
+    ) -> dict[str, Any]:
+        """Edit the Telegram approval owners. Owner status implies inbound permission."""
+        user_id = str(user_id).strip()
+        if not user_id:
+            return {"ok": False, "error": "user_id required"}
+        profile = self.secrets.get("telegram:default")
+        if not profile:
+            return {"ok": False, "error": "Telegram is not connected."}
+        owners = self.telegram_approval_owner_ids()
+        if add:
+            owners.add(user_id)
+        else:
+            owners.discard(user_id)
+        profile["approval_owner_ids"] = sorted(owners)
+        if add:
+            allowed = set(profile.get("allowed_users") or [])
+            allowed.add(user_id)
+            profile["allowed_users"] = sorted(allowed)
+        self.secrets.put("telegram:default", profile)
+        if display_name:
+            self._note_person("telegram", user_id, display_name)
+        if self.gateway is not None and "telegram" in self.gateway.settings:
+            self.gateway.settings["telegram"].allowed_users = set(
+                profile.get("allowed_users") or []
+            )
+        return {
+            "ok": True,
+            "approval_owner_ids": sorted(owners),
+            "allowed_users": list(profile.get("allowed_users") or []),
+        }
+
+
+    def _telegram_actor_owns_item(
+        self, item, *, actor_id: str, chat_id: str
+    ) -> bool:
+        """Authorize a Telegram resolution of a protected item.
+
+        Two conditions, mirroring the Slack rule (owner + bound channel):
+
+        - the reply must arrive in the chat the item's inbox is bound to — a reply from any
+          other chat is refused whoever sent it (an in-app-only inbox is not remotely
+          resolvable at all);
+        - the sender must be an approval owner. With owners configured that is the list.
+          With none configured, a binding to a private chat means exactly one allowed
+          human lives there (a Telegram DM's chat id IS the user's id), so that person is
+          the owner — single-user bots need no setup. A group binding (negative chat id)
+          with no owners configured refuses: a whole group never gains approval rights by
+          accident.
+        """
+        binding = self.inbox_routing.binding_for(item.inbox)
+        if binding.channel != "telegram" or not binding.target:
+            return False
+        bound_chat = str(binding.target).strip()
+        if str(chat_id or "").strip() != bound_chat or not actor_id:
+            return False
+        owners = self.telegram_approval_owner_ids()
+        if owners:
+            return actor_id in owners
+        if bound_chat.startswith("-"):
+            return False  # group/supergroup: owners must be chosen explicitly
+        return actor_id == bound_chat
+
 
     def set_slack_approval_owner(
         self, user_id: str, *, add: bool, display_name: str = ""
@@ -3823,12 +3923,76 @@ class SessionManager:
         event_team, event_channel = slack_split(chat_id)
         event_team = team_id or event_team
         binding = self.inbox_routing.binding_for(item.inbox)
+        if binding.channel != "slack" or not binding.target:
+            return False
         owner_team = event_team
         if binding.channel == "slack":
             owner_team, bound_channel = slack_split(binding.target)
             if owner_team != event_team or bound_channel != event_channel:
                 return False
         return bool(actor_id) and actor_id in self.slack_approval_owner_ids(owner_team)
+
+    _PROTECTED_ITEM_KINDS = {"approval", "directory", "plan"}
+
+    def _actor_owns_protected_item(
+        self,
+        item,
+        *,
+        platform: str,
+        actor_id: str,
+        chat_id: str,
+        team_id: Optional[str],
+    ) -> bool:
+        """Authorize a protected-item resolution over ANY transport.
+
+        The owner check used to run only on the Slack lane, so a Telegram reply (or button)
+        resolved protected approval/directory/plan items with no owner or channel-binding
+        validation at all — and items mirrored to Slack were resolvable from Telegram,
+        bypassing Slack's enforcement. This gates every transport:
+
+        - cross-transport is refused: an item bound to one channel can only be resolved from
+          that same channel (an in-app-only item is not remotely resolvable at all);
+        - Slack defers to the existing owner + bound-channel check;
+        - Telegram checks the bound chat and its own approval-owner list (OPE-217);
+        - any other transport has no approval-owner model, so it cannot resolve protected
+          items remotely — they stay pending for in-app resolution.
+        """
+        binding = self.inbox_routing.binding_for(item.inbox)
+        if binding.channel != platform or not binding.target:
+            return False
+        if platform == "slack":
+            return self._slack_actor_owns_item(
+                item, actor_id=actor_id, chat_id=chat_id, team_id=team_id
+            )
+        if platform == "telegram":
+            return self._telegram_actor_owns_item(
+                item, actor_id=actor_id, chat_id=chat_id
+            )
+        return False
+
+
+    def _notify_refused_reply(self, platform: str, chat_id: str, thread_id=None) -> None:
+        """Tell a human their tagged reply was refused by the owner check. Best-effort and
+        off the caller's path: the resolver runs synchronously inside the gateway's loop, so
+        the send is scheduled as a task; with no running loop (tests, CLI) it is skipped."""
+        if self.gateway is None or not platform or not chat_id:
+            return
+        from ..connectors.base import format_target
+        from ..connectors.gateway import APPROVAL_OWNER_REQUIRED
+
+        target = format_target(platform, str(chat_id), thread_id)
+
+        async def _send() -> None:
+            try:
+                await self.gateway.deliver(target, APPROVAL_OWNER_REQUIRED)
+            except Exception:
+                logger.debug("refusal reply to %s failed", target, exc_info=True)
+
+        try:
+            asyncio.get_running_loop().create_task(_send())
+        except RuntimeError:
+            pass
+
 
     def set_inbox_binding(
         self, name: str, *, channel: Optional[str], target: str
@@ -4487,6 +4651,7 @@ class SessionManager:
             ),
         )
         self._seed_task_permissions(engine, task)
+        engine.compaction_settings = self.compaction_settings
         return engine
 
     # -- mirroring inbox items to a bound channel -------------------------------
@@ -4534,20 +4699,27 @@ class SessionManager:
         item = self.inbox.get(item_id)
         if item is None:
             return
-        protected_kinds = {"approval", "directory", "plan"}
-        if (
-            getattr(event, "platform", "") == "slack"
-            and item.kind in protected_kinds
-        ):
+        if item.kind in self._PROTECTED_ITEM_KINDS:
             actor_id = str(getattr(event, "user_id", "") or "")
-            if not self._slack_actor_owns_item(
+            if not self._actor_owns_protected_item(
                 item,
+                platform=str(getattr(event, "platform", "") or ""),
                 actor_id=actor_id,
                 chat_id=getattr(event, "chat_id", "") or "",
                 team_id=getattr(event, "team_id", None),
             ):
                 if self.gateway is not None:
                     await self.gateway.reject_interaction(event)
+                    if getattr(event, "platform", "") != "slack":
+                        from ..connectors.base import format_target
+                        from ..connectors.gateway import APPROVAL_OWNER_REQUIRED
+
+                        try:
+                            await self.gateway.deliver(
+                                format_target(event.platform, str(event.chat_id)), APPROVAL_OWNER_REQUIRED
+                            )
+                        except Exception:
+                            logger.debug("refusal reply failed", exc_info=True)
                 return
         already = item is not None and item.state != "pending"
         resolved = await self.resolve_inbox(item_id, resolution)
@@ -4580,32 +4752,98 @@ class SessionManager:
             item = self.inbox.get(item_id)
             if item is None:
                 return False
-            if (
-                getattr(event.source, "platform", "") == "slack"
-                and item.kind in {"approval", "directory", "plan"}
-            ):
+            if item.kind in self._PROTECTED_ITEM_KINDS:
                 actor_id = str(getattr(event.source, "user_id", "") or "")
-                if not self._slack_actor_owns_item(
+                if not self._actor_owns_protected_item(
                     item,
+                    platform=str(getattr(event.source, "platform", "") or ""),
                     actor_id=actor_id,
                     chat_id=getattr(event.source, "chat_id", "") or "",
                     team_id=getattr(event.source, "team_id", None),
                 ):
+                    self._notify_refused_reply(
+                        str(getattr(event.source, "platform", "") or ""),
+                        getattr(event.source, "chat_id", "") or "",
+                        getattr(event.source, "thread_id", None),
+                    )
                     return False
             return self.inbox.resolve(item_id, resolution)
 
         return resolve_from_reply(text, _resolve) is not None
 
     # -- self-wake resumption ---------------------------------------------------
+    def reconcile_activity_receipts(self, session_id: str, messages=None) -> None:
+        """Advance wake/feed cursors only from messages already committed to storage.
+
+        Replaying receipts repairs a crash between the session write and cursor update.
+        Consumption is monotonic, so repeating that update is harmless.
+        """
+        if messages is None:
+            record = self.session_store.load(session_id)
+            messages = record.messages if record else []
+        for message in messages:
+            receipt = message.get("_activity")
+            if not isinstance(receipt, dict) or not receipt.get("id"):
+                continue
+            receipt_id = receipt["id"]
+            if receipt_id in self._activity_acknowledged:
+                continue
+            self.wakes.acknowledge(receipt.get("wake_ids") or [])
+            board = receipt.get("board") or {}
+            if board.get("direct_seq"):
+                self.team_store.consume_feed(board["space"], board["actor"], board["direct_seq"])
+            if board.get("subscription_seq"):
+                self.team_store.consume_subscription(board["space"], board["actor"], board["subscription_seq"])
+            if board.get("chat_seq"):
+                self.chat_store.consume(board["chat_group"], board["chat_handle"], board["chat_seq"])
+            self._activity_acknowledged.add(receipt_id)
+
+    def prepare_activity(self, session_id: str, reason: str, *, wake=None, board_receipt=None) -> dict:
+        """Attach earlier reminder context without changing the incoming user's text."""
+        self.reconcile_activity_receipts(session_id)
+        if reason == "user activity":
+            self.wakes.set_stopped(session_id, False)
+        if wake is None or wake.kind != "timer":
+            self.wakes.cancel_sleep(session_id, reason)
+        engine = self._engines.get(session_id)
+        queued = {
+            wake_id
+            for _, _, activity in (engine._steering if engine else [])
+            for wake_id in ((activity or {}).get("wake_ids") or [])
+        }
+        cancelled = [w for w in self.wakes.cancelled_context(session_id) if w.id not in queued]
+        notes = [
+            f"- Earlier reminder ({w.fire_at}), cancelled by {w.cancellation_reason}: {w.note or '(no note)'}"
+            for w in cancelled
+        ]
+        text = (
+            "Earlier agent reminders carried forward by the runtime. These are prior context; "
+            "the new incoming message takes precedence.\n" + "\n".join(notes)
+            if notes else ""
+        )
+        return {
+            "id": uuid.uuid4().hex,
+            "text": text,
+            "wake_ids": [w.id for w in cancelled] + ([wake.id] if wake else []),
+            "board": board_receipt or {},
+        }
+
+    def stop_session(self, session_id: str) -> None:
+        self.wakes.set_stopped(session_id, True)
+        self.wakes.cancel_sleep(session_id, "user stopped the session")
+        engine = self._engines.get(session_id)
+        if engine is not None:
+            engine.request_interrupt()
+
     async def _scheduler_tick(self) -> None:
-        """The shared per-tick work: resume due self-wakes, then drain team queues.
+        """Drain board activity before timers so one incoming turn carries both.
         Team deliveries dispatch as tasks (a long worker turn must not stall the
         scheduler)."""
-        await self.resume_due_wakes()
         try:
             await self.team_tick()
         except Exception:
             logger.exception("team tick failed")
+        await self.resume_due_wakes()
 
     async def resume_due_wakes(self) -> int:
         """Resume sessions whose self-wakes are due (called each scheduler tick). A suspended
@@ -4614,13 +4852,24 @@ class SessionManager:
         """
         resumed = 0
         for wake in self.wakes.due():
-            try:
-                await self._resume_wake(wake)
-                resumed += 1
-            except Exception:
-                pass
-            finally:
-                self.wakes.mark_fired(wake.id)
+            self.reconcile_activity_receipts(wake.session_id)
+            if (wake.state not in {"pending", "due"}
+                    or wake.session_id in self.wakes.stopped_sessions
+                    or self.is_running(wake.session_id)
+                    or wake.session_id in self._team_inflight):
+                continue
+            self._team_inflight.add(wake.session_id)
+
+            async def deliver(current=wake) -> None:
+                try:
+                    await self._resume_wake(current)
+                except Exception:
+                    logger.exception("wake delivery failed for %s", current.session_id)
+                finally:
+                    self._team_inflight.discard(current.session_id)
+
+            asyncio.create_task(deliver())
+            resumed += 1
         return resumed
 
     def mark_running(self, session_id: str) -> None:
@@ -4635,6 +4884,9 @@ class SessionManager:
 
     def mark_idle(self, session_id: str) -> None:
         self._running_sessions.discard(session_id)
+        if session_id in self.wakes.stopped_sessions:
+            # Stop can race a sleep tool already executing in a worker thread.
+            self.wakes.cancel_sleep(session_id, "user stopped the session")
         # Every turn path (WS, background delivery, durable resume) marks idle when it
         # finishes — the one shared post-turn moment, so auto-titling hooks in here and
         # can never add latency to the response itself.
@@ -4659,17 +4911,20 @@ class SessionManager:
         return session_id in self._running_sessions
 
     async def _resume_wake(self, wake) -> None:
+        if wake.state not in {"pending", "due"} or wake.session_id in self.wakes.stopped_sessions:
+            return
         message = self._wake_message(wake)
         # A lead's timer wake carries the staleness digest — pure code over the
         # board, scoped by role membership (teamless sessions get a bare wake).
         digest = self.team_staleness_digest(wake.session_id)
         if digest:
             message = f"{message}\n\n{digest}"
-        await self.deliver_to_session(wake.session_id, message)
+        await self.deliver_to_session(wake.session_id, message, wake=wake)
 
     async def deliver_to_session(
-        self, session_id: str, message: str, *, source: Optional[dict[str, Any]] = None
-    ) -> None:
+        self, session_id: str, message: str, *, source: Optional[dict[str, Any]] = None,
+        wake=None, board_receipt=None,
+    ) -> bool:
         """Deliver an out-of-band message to a (durable) session — the agent stays resumable
         forever, so this works with no live socket. Busy (mid tool-loop): steer it into the live
         turn at its next step (don't start a colliding run). Idle: run a fresh background turn
@@ -4677,14 +4932,29 @@ class SessionManager:
         by self-wake and channel-subscription delivery. `source` is the display-only MessageSource
         sidecar for connector messages (framed `message` stays the model-facing text).
         """
+        automatic = wake is not None or (source or {}).get("connector") == "board"
+        if automatic and session_id in self.wakes.stopped_sessions:
+            return False
         engine = self.get_engine(session_id)
         if engine is None:
-            return
+            return False
         if not self.try_mark_running(session_id):
-            engine.queue_steering(message, source)
-            return
+            # Routine activity remains in its durable queue; a new inbound user
+            # message can steer the running turn and cancels its earlier sleep.
+            if automatic:
+                return False
+            activity = self.prepare_activity(session_id, "user activity")
+            engine.queue_steering(message, source, activity)
+            return True
         try:
-            async for event in engine.run(message, source=source):
+            activity = self.prepare_activity(
+                session_id, f"{wake.kind} wake" if wake else "board activity" if automatic else "user activity",
+                wake=wake, board_receipt=board_receipt,
+            )
+            async for event in engine.run(message, source=source, activity=activity):
+                if event.type.value in {"turn_start", "iteration_end", "compacted", "continuation",
+                                        "permission_required", "directory_requested", "plan_proposed"}:
+                    self.save(session_id, engine)
                 # Stream every event to any socket viewing this session, so a background turn
                 # (channel delivery, self-wake, durable resume) is seen live — not just on reselect.
                 await self.broadcast_session(
@@ -4699,6 +4969,7 @@ class SessionManager:
                     )
                     self.unrouted.record(session_id, "-", message, reason=reason)
             self.save(session_id, engine)
+            return True
         except (
             Exception
         ) as exc:  # an unexpected raise out of the turn must not be swallowed
@@ -4707,6 +4978,7 @@ class SessionManager:
             await self.broadcast_session(
                 session_id, {"type": "error", "data": {"error": str(exc)}}
             )
+            return False
         finally:
             self.mark_idle(session_id)
             await self.broadcast_session(session_id, {"type": "turn_done", "data": {}})
@@ -4883,19 +5155,22 @@ class SessionManager:
 
     @staticmethod
     def _wake_message(wake) -> str:
+        from datetime import datetime, timezone
+
+        fired = f"Actual wake time: {datetime.now(timezone.utc).astimezone().isoformat()}. "
         note = f" (note: {wake.note})" if getattr(wake, "note", "") else ""
         if wake.kind == "completion":
             return (
-                f"⏰ Wake — the job `{wake.job_id}` you were waiting on has completed{note}. "
+                fired + f"⏰ Wake — the job `{wake.job_id}` you were waiting on has completed{note}. "
                 "Continue where you left off."
             )
         if wake.kind == "event":
             return (
-                f"⏰ Wake — the event `{wake.event_key}` you were waiting on has fired{note}. "
+                fired + f"⏰ Wake — the event `{wake.event_key}` you were waiting on has fired{note}. "
                 "Continue where you left off."
             )
         return (
-            f"⏰ Wake — the timer you set has fired{note}. Continue where you left off."
+            fired + f"⏰ Wake — the timer you set has fired{note}. Continue where you left off."
         )
 
     async def _run_scheduled_task(self, task, trigger: str) -> TaskRun:
@@ -4926,6 +5201,7 @@ class SessionManager:
         # Register the live engine up-front: a parked approval persists the session
         # mid-run (durable suspend), and resolving from the Inbox must find this engine.
         self._engines[run.session_id] = engine
+        self.mark_running(run.session_id)
         # The first turn is the task itself. The framing matters: instructions often restate the
         # schedule ("every day at 5:32pm…"), so make explicit that the schedule already fired and
         # the job now is to execute, not to (re)schedule.
@@ -4936,12 +5212,25 @@ class SessionManager:
             f"{task.instructions}"
         )
         try:
-            async for _event in engine.run(opening):
-                pass
+            end_status = None
+            async for event in engine.run(opening):
+                if event.type.value in {"turn_start", "iteration_end", "compacted", "continuation"}:
+                    self.save(run.session_id, engine)
+                await self.broadcast_session(
+                    run.session_id, {"type": event.type.value, "data": event.data}
+                )
+                if event.type.value == "turn_end":
+                    end_status = event.data.get("status")
+                elif event.type.value == "error":
+                    end_status, run.error = "error", event.data.get("error")
+                elif event.type.value == "interrupted":
+                    end_status = "interrupted"
             run.result_text = _last_assistant_text(engine.messages)
             run.artifacts = _recent_files(task.workspace, since=run.started_at)
-            run.status = "ok"
-            if task.notify_on_completion:
+            run.status = "ok" if end_status == "completed" else end_status or "error"
+            if run.status != "ok" and not run.error:
+                run.error = f"Task remains incomplete ({run.status})"
+            if task.notify_on_completion and run.status == "ok":
                 await self._notify_task_done(task, run)
         except Exception as exc:
             run.status, run.error = "error", str(exc)
@@ -4955,6 +5244,8 @@ class SessionManager:
             except Exception:
                 pass
             self.task_store.add_run(run)
+            self.mark_idle(run.session_id)
+            await self.broadcast_session(run.session_id, {"type": "turn_done", "data": {}})
         return run
 
     async def _notify_task_done(self, task, run: TaskRun) -> None:
@@ -5147,6 +5438,10 @@ class SessionManager:
             return {"ok": False, "error": "not found"}
         if run.status == "running":
             record = self.session_store.load(run.session_id)
+            tail = next((m for m in reversed(record.messages) if m.get("kind") != "model_switch"), {}) if record else {}
+            if (self.is_running(run.session_id) or tail.get("role") != "assistant"
+                    or tail.get("finish_reason") == "length" or tail.get("tool_calls")):
+                return {"ok": False, "error": "The task has not completed; finish or retry the session first."}
             run.result_text = _last_assistant_text(record.messages) if record else None
             run.artifacts = _recent_files(task.workspace, since=run.started_at)
             run.status = "ok"
@@ -5179,6 +5474,7 @@ class SessionManager:
             ),
             touch=touch,
         )
+        self.reconcile_activity_receipts(session_id, engine.messages)
 
     @staticmethod
     def _apply_grants(engine: TurnEngine, grants: dict[str, Any]) -> None:

@@ -46,7 +46,7 @@ export const isDeclined = value => value === 'deny' || value === 'denied';
 // Pair a resolved approval with the closest matching call, keeping declined or
 // unexecuted requests as their own intent rows, just as the reference frontend does.
 export function turnRows(items) {
-  const rows = items.filter(item => item.kind !== 'approval' && (item.kind !== 'assistant' || item.text || item.reasoning))
+  const rows = items.filter(item => item.kind !== 'approval' && (item.kind !== 'assistant' || item.text || item.reasoning || item.finishReason === 'length'))
     .map(item => item.kind === 'assistant' ? { kind: 'narration', item } : { kind: 'step', item });
   for (const approval of items.filter(item => item.kind === 'approval')) {
     const position = items.indexOf(approval);

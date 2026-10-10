@@ -484,6 +484,7 @@ class GeminiProvider(ProviderClient):
             reasoning="".join(parsed.thoughts) or None,
             extras=_signature_extras(parsed.text_sig, parsed.call_sigs),
             usage=_usage_from(getattr(response, "usage_metadata", None)),
+            output_limit=kwargs["config"].get("max_output_tokens"),
         )
 
     def capabilities(self, model: str) -> ModelCapabilities:
@@ -543,5 +544,6 @@ class GeminiProvider(ProviderClient):
                 reasoning="".join(thought_parts) or None,
                 extras=_signature_extras(text_sig, call_sigs),
                 usage=usage,
+                output_limit=kwargs["config"].get("max_output_tokens"),
             )
         )

@@ -21,3 +21,4 @@ surfaces_vue/assets/*
 .venv-desktop/
 .idea
 surfaces_vue/.idea/
+AGENT.md

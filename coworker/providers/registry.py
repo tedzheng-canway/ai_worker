@@ -118,15 +118,16 @@ def _normalize_ollama_url(url: Optional[str]) -> str:
 
 
 def _build_openai(profile: dict[str, Any], secrets: Any) -> ProviderClient:
-    # Key resolution stays in resolve_api_key (explicit → env → SecretStore), so we just
-    # hand over the SecretStore. Stock OpenAI (no custom endpoint) speaks the Responses
+    # A saved key overrides an environment key, matching the source shown in Settings.
+    # Stock OpenAI (no custom endpoint) speaks the Responses
     # API — the only wire with reasoning + tools on GPT-5.6+. A custom endpoint (Azure
     # OpenAI /openai/v1, vLLM, any OpenAI-compliant gateway) keeps Chat Completions,
     # which is what compat servers implement.
     base_url = ((profile or {}).get("base_url") or "").strip() or None
+    api_key = ((profile or {}).get("api_key") or "").strip() or None
     if base_url:
-        return OpenAIProvider(secrets=secrets, base_url=base_url)
-    return OpenAIResponsesProvider(secrets=secrets)
+        return OpenAIProvider(api_key=api_key, secrets=secrets, base_url=base_url)
+    return OpenAIResponsesProvider(api_key=api_key, secrets=secrets)
 
 
 def _build_codex(profile: dict[str, Any], secrets: Any) -> ProviderClient:

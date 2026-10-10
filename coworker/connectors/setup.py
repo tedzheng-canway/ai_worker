@@ -365,7 +365,7 @@ def connect_connector(
     profile: dict[str, Any] = {"type": profile_type, "enabled": True, **token_creds}
     if any(f.key == "allowed_users" for f in d.fields):
         profile["allowed_users"] = allowed
-    if name == "slack" and existing.get("approval_owner_ids"):
+    if name in {"slack", "telegram"} and existing.get("approval_owner_ids"):
         # Re-pasting manual Socket Mode tokens must not erase the locally selected
         # approval owners.
         profile["approval_owner_ids"] = list(existing["approval_owner_ids"])

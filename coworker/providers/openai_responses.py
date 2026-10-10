@@ -47,8 +47,7 @@ from .base import (
 from .capabilities import capabilities_for
 from .openai_provider import resolve_api_key
 
-# Request params passed through from model settings; everything else (frequency_penalty,
-# reasoning_effort — no effort knob in v1, the server default rides) is dropped.
+# Request params passed through from model settings; reasoning effort is mapped below.
 _SETTINGS_WHITELIST = {
     "temperature",
     "top_p",
@@ -365,6 +364,8 @@ class OpenAIResponsesProvider(ProviderClient):
         }
         if self._reasoning_summary:
             kwargs["reasoning"] = {"summary": "auto"}
+        if settings.get("reasoning_effort"):
+            kwargs["reasoning"] = {**kwargs.get("reasoning", {}), "effort": settings["reasoning_effort"]}
         if instructions:
             kwargs["instructions"] = instructions
         if tools:
@@ -380,7 +381,9 @@ class OpenAIResponsesProvider(ProviderClient):
             try:
                 return client.responses.create(**kwargs)
             except Exception as exc:
-                kwargs = _param_fix_retry(kwargs, exc)
+                fixed = _param_fix_retry(kwargs, exc)
+                kwargs.clear()
+                kwargs.update(fixed)
         return client.responses.create(**kwargs)
 
     def complete(
@@ -395,7 +398,7 @@ class OpenAIResponsesProvider(ProviderClient):
             model=model, messages=messages, tools=tools, settings=settings
         )
         response = self._create(self._ensure_client(), kwargs)
-        return _parse_response(response)
+        return _record_request(_parse_response(response), kwargs, settings)
 
     def capabilities(self, model: str) -> ModelCapabilities:
         return capabilities_for(model)
@@ -452,11 +455,30 @@ class OpenAIResponsesProvider(ProviderClient):
             turn = _parse_response(final)
             if turn.text is None and not turn.tool_calls and text_parts:
                 turn.text = "".join(text_parts)
-            yield StreamChunk(turn=turn)
+            yield StreamChunk(turn=_record_request(turn, kwargs, settings))
         else:
             yield StreamChunk(
                 turn=AssistantTurn(
                     text="".join(text_parts) or None,
                     reasoning="".join(reasoning_parts) or None,
+                    output_limit=kwargs.get("max_output_tokens"),
+                    effort=_request_effort(kwargs, settings),
                 )
             )
+
+
+def _request_effort(kwargs, settings):
+    requested = settings.get("reasoning_effort")
+    effective = (kwargs.get("reasoning") or {}).get("effort")
+    if requested is None and effective is None:
+        return None
+    return {
+        "requested": requested, "effective": effective,
+        **({"param": {"reasoning": {"effort": effective}}} if effective else {"note": "endpoint did not accept a reasoning effort parameter"}),
+    }
+
+
+def _record_request(turn, kwargs, settings):
+    turn.output_limit = kwargs.get("max_output_tokens")
+    turn.effort = _request_effort(kwargs, settings)
+    return turn

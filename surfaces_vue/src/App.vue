@@ -3,7 +3,7 @@ import appLogo from '@app-logo';
 import { t } from './i18n';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { createTempWorkspace, deleteSession, finalizeAutomationRun, getHealth, getMessages, getPersonas, getSessions, getSettings, setSessionFlags, Session } from "./api";
-import { approvalMeta, historyItems } from "./history";
+import { approvalMeta, assistantMeta, historyItems, truncatedText } from "./history";
 import { contextUsage, historyUsage, settingsWithDefaults } from "./settings";
 import { ManualRuns } from "./manualRuns";
 import OnboardingView from './components/OnboardingView.vue';
@@ -23,6 +23,8 @@ import FolderDialog from "./components/FolderDialog.vue";
 import SelectMenu from "./components/SelectMenu.vue";
 import TokenUsage from "./components/TokenUsage.vue";
 import ToolTurnGroup from "./components/ToolTurnGroup.vue";
+import CompactionRecord from './components/CompactionRecord.vue';
+import ResponseMeta from './components/ResponseMeta.vue';
 import ApprovalPrompt from "./components/ApprovalPrompt.vue";
 import MarkdownView from './components/MarkdownView.vue';
 import ArtifactPanel from './components/ArtifactPanel.vue';
@@ -215,7 +217,7 @@ function handleEvent(event) {
   } else if (event.type === "assistant_message") {
     if (data.usage) usage.value = contextUsage(data.usage);
     totals.value = addUsage(totals.value, data.usage);
-    if (data.text || data.reasoning || streaming.value || streamReasoning.value) messages.value.push({ kind: "assistant", text: data.text || streaming.value, reasoning: data.reasoning || streamReasoning.value });
+    if (data.text || data.reasoning || streaming.value || streamReasoning.value || data.finish_reason === 'length') messages.value.push({ kind: "assistant", text: data.text || streaming.value, reasoning: data.reasoning || streamReasoning.value, ...assistantMeta(data) });
     streaming.value = "";
     streamReasoning.value = '';
   } else if (event.type === "tool_proposed") {
@@ -262,6 +264,10 @@ function handleEvent(event) {
     refreshSessions();
   } else if (event.type === 'turn_end') {
     if (data.status === 'max_iterations_exceeded') addNotice('本轮已达到最大执行步数，可发送新消息继续。');
+    if (data.status === 'truncated') messages.value.push({ kind: 'notice', text: truncatedText, retriable: true });
+    if (data.status === 'sleeping') addNotice('已暂停，等待唤醒。');
+  } else if (event.type === 'continuation') {
+    messages.value.push({ kind: 'continuation', attempt: data.attempt });
   } else if (event.type === "interrupted") {
     flushPartial();
     running.value = false;
@@ -273,7 +279,9 @@ function handleEvent(event) {
   } else if (event.type === 'input_rejected') {
     running.value = !!socket?.running;
     addNotice(data.error || '输入被拒绝');
-  } else if (event.type === "mode_notice" || event.type === "model_changed" || event.type === "compacted") {
+  } else if (event.type === 'compacted') {
+    messages.value.push({ kind: 'compaction', record: data.compaction || {}, text: data.text });
+  } else if (event.type === "mode_notice" || event.type === "model_changed") {
     if (event.type === "model_changed" && data.model) model.value = data.model;
     addNotice(data.text || "会话设置已更新");
   }
@@ -806,10 +814,13 @@ onBeforeUnmount(() => {
             <template v-else-if="item.kind === 'assistant'">
               <details v-if="item.reasoning" class="reasoning"><summary>{{ t("思考过程") }}</summary><pre>{{ item.reasoning }}</pre></details>
               <MarkdownView class="assistant-copy" :text="item.text" /><small>{{ formatTime(item.ts) }}</small>
+              <ResponseMeta :item="item" />
             </template>
             <ToolTurnGroup v-else-if="item.kind === 'steps'" :items="item.items" :live="item.live" :streaming-text="item.live ? streaming : ''" :streaming-reasoning="item.live ? streamReasoning : ''" :busy="running" :connected="connected" @allow-anyway="allowAnyway" />
             <template v-else-if="item.kind === 'memory'"><div class="memory-notice"><strong>{{ item.undone ? t("已撤销记忆") : typeof item.previous==='string' ? t("已修改记忆") : t("已新增记忆") }}</strong><p>{{ item.text }}</p><button v-if="!item.undone" class="btn" :disabled="item.busy" @click="undoSavedMemory(item)">{{ t("撤销记忆") }}</button><p v-if="item.error" class="error-text" role="alert">{{ item.error }}</p></div></template>
-            <template v-else-if="item.kind === 'notice'"><div class="notice-line">{{ item.text }} <button v-if="item.retriable" class="btn" :disabled="running || !connected" @click="socket.retry(); running = true">{{ t("重试") }}</button></div></template>
+            <CompactionRecord v-else-if="item.kind === 'compaction'" :record="item.record" @open="path => openArtifact({detail:{path}})" />
+            <template v-else-if="item.kind === 'continuation'"><div class="notice-line" role="status">{{ t('输出达到上限，正在续接') }} ({{ item.attempt }}/2)</div></template>
+            <template v-else-if="item.kind === 'notice'"><div class="notice-line">{{ t(item.text) }} <button v-if="item.retriable" class="btn" :disabled="running || !connected" @click="socket.retry(); running = true">{{ t("重试") }}</button></div></template>
             <template v-else-if="item.kind === 'approval'"><div class="inline-card"><strong>{{ t("允许执行 ") }}{{ item.name }}？</strong><p>{{ item.reason || t("此操作需要你的确认。") }}</p></div></template>
             <template v-else-if="item.kind === 'question'"><div class="inline-card"><strong>{{ item.text }}</strong></div></template>
           </article>

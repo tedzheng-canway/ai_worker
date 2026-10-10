@@ -14,21 +14,32 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from dataclasses import dataclass, replace
 from enum import Enum
+from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 from . import compaction as _compaction
 from . import provenance
 from . import session_facts
 from . import toolchain as _toolchain
+from . import toolresult
 from .events import Event, EventType
 
 # §8.4 retry guard: the reviewer pauses for the rest of the turn after this many denials
 # IN A ROW (2→5 + streak semantics, owner ruling 2026-08-24 — a cumulative 2 silently
 # downgraded long agentic turns to hand-approval after one over-strict pair).
 _REVIEWER_TRIP = 5
+MAX_TRUNCATION_CONTINUATIONS = 2
+TRUNCATION_NUDGE = (
+    "Your previous reply hit the output-token limit before you took an action or "
+    "finished. Do not repeat the long reasoning. Decide the next concrete step and "
+    "call a tool now, or give the final answer briefly."
+)
+TRUNCATION_STUB = "(reply cut off at the output-token limit before any action)"
+EPHEMERAL_CONTEXT_OPEN = "<system-context>"
 _REVIEWER_PAUSED_TEXT = (
     "Auto-approve is paused for the rest of this turn — the reviewer blocked "
     f"{_REVIEWER_TRIP} actions in a row, so approvals now come to you."
@@ -99,6 +110,8 @@ class TurnEngine:
         approver: Optional[Approver] = None,
         max_iterations: int = 12,
         model_settings: Optional[dict[str, Any]] = None,
+        tool_result_max_bytes: Optional[int] = None,
+        tool_result_spill_dir: Optional[str | Path] = None,
         messages: Optional[list[dict[str, Any]]] = None,
         audit_sink: Optional[Callable[[dict[str, Any]], None]] = None,
         context_provider: Optional[Callable[[], str]] = None,
@@ -131,6 +144,8 @@ class TurnEngine:
         self.approver = approver or _deny_all
         self.max_iterations = max_iterations
         self.model_settings = dict(model_settings or {})
+        self._tool_result_max_bytes = toolresult.DEFAULT_TOOL_RESULT_MAX_BYTES if tool_result_max_bytes is None else tool_result_max_bytes
+        self._tool_result_spill_dir = Path(tool_result_spill_dir) if tool_result_spill_dir is not None else None
         self.messages: list[dict[str, Any]] = list(messages or [])
         self.audit_sink = audit_sink
         # Returns an ephemeral `<system-context>` block appended to the LAST user message at
@@ -170,6 +185,7 @@ class TurnEngine:
         # treat as unattended: never park a background run on internal bookkeeping).
         self.compaction_state: Optional[_compaction.CompactionState] = None
         self.compaction_settings: Optional[Callable[[], dict[str, Any]]] = None
+        self.compaction_defaults: dict[str, Any] = {}
         self.is_attended: Optional[Callable[[], bool]] = None
         # Session facts (spec Part 0 / §2.4) — the known world frozen at session start, plus
         # the per-turn ingestion record. Set post-construction by the surface, same as
@@ -232,7 +248,8 @@ class TurnEngine:
         # restart costs context (more cards), never correctness.
         self._agent_files = provenance.SessionFiles(permissions.workspace_root)
         # Completed tool calls so far, so a fact can say how many steps back the write was.
-        self._step = 0
+        self._step = sum(m.get("role") == "tool" for m in self.messages)
+        self._result_sequence = self._step
         self._last_context_tokens: Optional[int] = None
         self.audit_context: dict[str, Any] = {}
         if instructions and not (
@@ -243,8 +260,10 @@ class TurnEngine:
         # Whether the latest assistant turn hit the output-token limit — decides which
         # diagnosis a mangled (unparseable-args) tool call gets answered with.
         self._turn_truncated = False
-        # Each pending steering message: (text, optional MessageSource sidecar dict).
-        self._steering: list[tuple[str, Optional[dict[str, Any]]]] = []
+        self._continuations = 0
+        self._yield_for_wake = False
+        # Each pending steering message: (text, optional source, durable activity receipt).
+        self._steering: list[tuple[str, Optional[dict[str, Any]], Optional[dict[str, Any]]]] = []
         # tool_call.id → the standing rule that auto-allowed it ("tool → target"), so the
         # TOOL_FINISHED event can carry the note to the tool card (§25).
         self._standing_notes: dict[str, str] = {}
@@ -282,9 +301,9 @@ class TurnEngine:
             cancel_wait.cancel()
 
     def queue_steering(
-        self, text: str, source: Optional[dict[str, Any]] = None
+        self, text: str, source: Optional[dict[str, Any]] = None, activity: Optional[dict[str, Any]] = None
     ) -> None:
-        self._steering.append((text, source))
+        self._steering.append((text, source, activity))
 
     # -- main loop --------------------------------------------------------------
     async def run(
@@ -293,6 +312,7 @@ class TurnEngine:
         *,
         source: Optional[dict[str, Any]] = None,
         display: Optional[str] = None,
+        activity: Optional[dict[str, Any]] = None,
     ) -> AsyncIterator[Event]:
         # `user_input` is a string, or OpenAI content-parts (text + image_url) for attachments.
         # `source` (a MessageSource dict) is a display-only sidecar for connector messages: it
@@ -302,6 +322,9 @@ class TurnEngine:
         # literal "/skill …" line for the transcript, while `content` carries the model-facing
         # framing. `ts` (unix seconds, stamped on every appended message) is the same kind of
         # sidecar.
+        self._repair_dangling_tool_calls()
+        if self._steering:
+            self._inject_steering()  # older queued input stays before the new user's request
         message: dict[str, Any] = {
             "role": "user",
             "content": user_input,
@@ -311,6 +334,8 @@ class TurnEngine:
             message["source"] = source
         if display is not None:
             message["_display"] = display
+        if activity is not None:
+            message["_activity"] = activity
         self.messages.append(message)
         self._cancel.clear()
         if self.session_facts is not None:
@@ -324,6 +349,8 @@ class TurnEngine:
             data["source"] = source
         if display is not None:
             data["display"] = display
+        if activity is not None:
+            data["activity"] = activity
         # OPE-136 run grants: a fresh run starts with a clean slate (belt — the
         # finally below is the braces; an abandoned generator must not leak a
         # previous answer's "Allow for this request" into this one).
@@ -388,7 +415,7 @@ class TurnEngine:
                 return False
             if message.get("kind") == "model_switch":
                 continue
-            return message.get("kind") == "error"
+            return message.get("kind") in {"error", "truncated"}
         return False
 
     def _append_notice(self, kind: str, text: Optional[str] = None, **fields: Any) -> None:
@@ -402,7 +429,7 @@ class TurnEngine:
         notice.update({k: v for k, v in fields.items() if v is not None})
         self.messages.append(notice)
 
-    async def retry(self) -> AsyncIterator[Event]:
+    async def retry(self, *, activity: Optional[dict[str, Any]] = None) -> AsyncIterator[Event]:
         """Re-run the model loop after a provider error — no new user message; the failed
         turn's input is already the tail of history. Guarded on the tail being an error
         notice so a stray retry frame can't re-answer a completed turn. Trailing
@@ -410,7 +437,12 @@ class TurnEngine:
         is the intended recovery path (owner-hit 2026-07-23)."""
         if not self._tail_is_retriable_error():
             return
+        if activity is not None:
+            # A retry is a new user action, but reuses the original input.
+            # Keep its reminder receipt on the tail notice for crash recovery.
+            self.messages[-1]["_activity"] = activity
         self._cancel.clear()
+        self._repair_dangling_tool_calls()
         yield Event(EventType.TURN_START, {"input": ""})
         async for event in self._loop():
             yield event
@@ -425,13 +457,58 @@ class TurnEngine:
         if not pending:
             return
         self._cancel.clear()
+        self._yield_for_wake = False
         yield Event(EventType.TURN_START, {"input": "(resumed)"})
         async for event in self._handle_tool_calls(pending):
             yield event
         yield Event(EventType.ITERATION_END, {"iteration": 0})
+        if self._yield_for_wake and not self._cancel.is_set():
+            yield Event(EventType.TURN_END, {"status": "sleeping", "iterations": 0})
+            return
         if not self._cancel.is_set():
             async for event in self._loop():
                 yield event
+
+    def _repair_dangling_tool_calls(self) -> None:
+        """Close every orphaned tool_use in history with a stub tool result.
+
+        An interrupted turn (restart mid-approval, crash between call and
+        result) leaves an assistant message whose tool_calls have no results;
+        providers reject the whole conversation for it. Stubs are inserted
+        IMMEDIATELY after the offending assistant message, keep the ids, and
+        say honestly what happened — the model may re-issue the call."""
+        answered = {
+            m.get("tool_call_id") for m in self.messages if m.get("role") == "tool"
+        }
+        i = 0
+        while i < len(self.messages):
+            msg = self.messages[i]
+            stubs = []
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                for tc in msg["tool_calls"]:
+                    if tc.get("id") and tc["id"] not in answered:
+                        stubs.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tc["id"],
+                                "content": json.dumps(
+                                    {
+                                        "error": "tool call interrupted — no result "
+                                        "was recorded (the session was restarted). "
+                                        "Re-issue the call if it is still needed."
+                                    }
+                                ),
+                                "ts": time.time(),
+                            }
+                        )
+            for offset, stub in enumerate(stubs, start=1):
+                self.messages.insert(i + offset, stub)
+                answered.add(stub["tool_call_id"])
+                if self.compaction_state is not None and i < self.compaction_state.boundary_index:
+                    self.compaction_state.boundary_index += 1
+            self._result_sequence += len(stubs)
+            i += 1 + len(stubs)
+
 
     def _unanswered_trailing_tool_calls(self) -> list[ToolCall]:
         """The tool-calls of the last assistant message that don't yet have a tool result —
@@ -460,8 +537,13 @@ class TurnEngine:
         return []
 
     async def _loop(self) -> AsyncIterator[Event]:
+        self._yield_for_wake = False
+        self._continuations = 0
         iterations = 0
         while True:
+            if self._steering and not self._cancel.is_set():
+                self._inject_steering()
+                yield Event(EventType.ITERATION_END, {"iteration": iterations, "steering": True})
             if iterations >= self.max_iterations:
                 yield Event(
                     EventType.TURN_END,
@@ -469,6 +551,10 @@ class TurnEngine:
                 )
                 return
             iterations += 1
+            if self._cancel.is_set():
+                self._append_notice("interrupted")
+                yield Event(EventType.INTERRUPTED, {"iterations": iterations - 1})
+                return
 
             # Auto-compaction checkpoint (OPE-27): between tool turns and before a new
             # turn's first call. Deliberately no "wrap up" warning to the model. The
@@ -478,9 +564,14 @@ class TurnEngine:
             if self._compaction_due():
                 yield Event(EventType.COMPACTING, {})
                 notice = await self._compact_now()
+            if self._cancel.is_set():
+                self._append_notice("interrupted")
+                yield Event(EventType.INTERRUPTED, {"iterations": iterations - 1})
+                return
             if notice:
-                self._append_notice("compacted", notice)
-                yield Event(EventType.COMPACTED, {"text": notice})
+                record = self._compaction_record()
+                self._append_notice("compacted", notice, compaction=record)
+                yield Event(EventType.COMPACTED, {"text": notice, "compaction": record})
 
             turn: Optional[AssistantTurn] = None
             streamed: list[str] = []
@@ -517,8 +608,9 @@ class TurnEngine:
                     yield Event(EventType.COMPACTING, {})
                     notice = await self._compact_now(force=True)
                     if notice:
-                        self._append_notice("compacted", notice)
-                        yield Event(EventType.COMPACTED, {"text": notice})
+                        record = self._compaction_record()
+                        self._append_notice("compacted", notice, compaction=record)
+                        yield Event(EventType.COMPACTED, {"text": notice, "compaction": record})
                         continue
                 # Same contract as the stop path below: the partial the user watched
                 # arrive survives the failure.
@@ -549,8 +641,10 @@ class TurnEngine:
                 self._last_context_tokens = turn.usage.context_tokens
 
             self._turn_truncated = turn.finish_reason == "length"
+            if not self._turn_truncated or turn.tool_calls:
+                self._continuations = 0
             _sanitize_mangled_calls(turn)
-            self.messages.append(_assistant_message(turn, model=self.model))
+            self.messages.append(_assistant_message(turn, model=self.model, effort_setting=self.model_settings.get("reasoning_effort")))
             payload: dict[str, Any] = {
                 "text": turn.text,
                 "tool_calls": [tc.name for tc in turn.tool_calls],
@@ -559,12 +653,45 @@ class TurnEngine:
                 payload["reasoning"] = turn.reasoning
             if turn.usage is not None:
                 payload["usage"] = {"model": self.model, **turn.usage.as_dict()}
+            if turn.finish_reason:
+                payload["finish_reason"] = turn.finish_reason
+            if turn.output_limit is not None:
+                payload["max_output_tokens"] = turn.output_limit
+            effort_record = _effort_record(turn, self.model_settings.get("reasoning_effort"))
+            if effort_record:
+                payload["reasoning_effort"] = effort_record
             yield Event(EventType.ASSISTANT_MESSAGE, payload)
+            if self._steering and not turn.tool_calls and not self._cancel.is_set():
+                self._inject_steering()
+                self._continuations = 0
+                yield Event(EventType.ITERATION_END, {"iteration": iterations, "steering": True})
+                continue
 
             if not turn.tool_calls:
                 if self._steering:
                     self._inject_steering()
                     continue
+                if self._turn_truncated:
+                    self.messages[-1]["replay"] = "stub"
+                    if self._continuations < MAX_TRUNCATION_CONTINUATIONS:
+                        self._continuations += 1
+                        self.messages.append({
+                            "role": "user", "content": TRUNCATION_NUDGE, "ts": time.time(),
+                            "_display": {"kind": "continuation", "reason": "length", "attempt": self._continuations},
+                        })
+                        yield Event(EventType.CONTINUATION, {
+                            "reason": "length", "attempt": self._continuations,
+                            "remaining": MAX_TRUNCATION_CONTINUATIONS - self._continuations,
+                            "iterations": iterations,
+                            "text": f"Reply reached the output limit; continuing ({self._continuations}/{MAX_TRUNCATION_CONTINUATIONS}).",
+                        })
+                        continue
+                    text = "The reply repeatedly reached its output limit. Increase the output limit, lower reasoning effort, or retry."
+                    self._append_notice("truncated", text, continuations=self._continuations)
+                    yield Event(EventType.TURN_END, {
+                        "status": "truncated", "iterations": iterations, "continuations": self._continuations, "text": text,
+                    })
+                    return
                 # The model tried to call a tool and the syntax never parsed — salvage already
                 # had its go. Ending as "completed" here would present a half-written call as
                 # the answer, which is indistinguishable from the model deciding it was done;
@@ -599,18 +726,25 @@ class TurnEngine:
                 self._append_notice("interrupted")
                 yield Event(EventType.INTERRUPTED, {"iterations": iterations})
                 return
+            if self._yield_for_wake and not self._steering:
+                yield Event(EventType.TURN_END, {"status": "sleeping", "iterations": iterations})
+                return
             if self._steering:
                 self._inject_steering()
+                self._yield_for_wake = False
 
     # -- auto-compaction (OPE-27) ------------------------------------------------
     def _compaction_config(self) -> dict[str, Any]:
-        cfg = dict(self.compaction_settings() or {}) if self.compaction_settings else {}
+        cfg = dict(self.compaction_defaults)
+        if self.compaction_settings:
+            cfg.update(self.compaction_settings() or {})
         if not cfg.get("context_window"):
             from .providers.matrix import model_context_windows
 
             cfg["context_window"] = model_context_windows().get(self.model)
         cfg.setdefault("threshold_pct", _compaction.DEFAULT_THRESHOLD_PCT)
         cfg.setdefault("cap_tokens", _compaction.DEFAULT_CAP_TOKENS)
+        cfg.setdefault("summary_max_tokens", _compaction.SUMMARY_MAX_TOKENS)
         return cfg
 
     def _compaction_due(self) -> bool:
@@ -629,6 +763,17 @@ class TurnEngine:
             cap_tokens=int(cfg["cap_tokens"]),
         )
 
+    def _compaction_record(self) -> Optional[dict[str, Any]]:
+        """The compaction that just happened, as persisted on the `compacted` notice and
+        carried on the COMPACTED event (OPE-170 problem 2): summary text, working state,
+        the boundary into the canonical transcript, the summarizer model, and whether it
+        was the no-summary trim. Without it a saved session only showed THAT compaction
+        happened, not what was kept — the app's session record keeps only the latest
+        state, and exported trajectories / run records had nothing at all."""
+        state = self.compaction_state
+        return state.as_dict() if state is not None else None
+
+
     async def _compact_now(self, *, force: bool = False) -> Optional[str]:
         """Run the compaction policy. Callers gate on `_compaction_due()` (or `force`,
         the overflow path). Returns the user-facing notice text when the outbound view
@@ -639,9 +784,13 @@ class TurnEngine:
         pct = float(cfg["threshold_pct"])
         cap = int(cfg["cap_tokens"])
         window = cfg.get("context_window")
-        keep = int(
-            _compaction.KEEP_RECENT_FRACTION
-            * _compaction.trigger_tokens(window, threshold_pct=pct, cap_tokens=cap)
+        trigger = _compaction.trigger_tokens(window, threshold_pct=pct, cap_tokens=cap)
+        keep = int(_compaction.KEEP_RECENT_FRACTION * trigger)
+        # OPE-189: both budgets scale with the trigger, so lowering it to save tokens can't
+        # be undone by a block that keeps spending the freed space.
+        user_budget = _compaction.user_message_budget(trigger)
+        summary_max = int(
+            cfg.get("summary_max_tokens") or _compaction.SUMMARY_MAX_TOKENS
         )
         model = str(cfg.get("model") or "") or self.model
 
@@ -652,6 +801,8 @@ class TurnEngine:
                 model=model,
                 keep_tokens=keep,
                 prior=self.compaction_state,
+                summary_max_tokens=summary_max,
+                user_budget_tokens=user_budget,
             )
 
         state: Optional[_compaction.CompactionState] = None
@@ -689,16 +840,38 @@ class TurnEngine:
                 except Exception:
                     continue
         if state is not None:
+            # OPE-186 change 3: keep the compacted turns readable. The verbatim transcript
+            # up to the boundary goes to a file next to the spilled tool results, and the
+            # compacted block tells the model where it is, so a detail the summary dropped
+            # costs one read instead of being lost.
+            self._save_compaction_transcript(state)
             self.compaction_state = state
             self._last_context_tokens = None  # stale once the outbound view shrank
             return "Context compacted — earlier turns were summarized"
         if failed or force:
-            trimmed = _compaction.trim_state(self.messages, prior=self.compaction_state)
+            trimmed = _compaction.trim_state(
+                self.messages,
+                prior=self.compaction_state,
+                user_budget_tokens=user_budget,
+            )
             if trimmed is not None:
+                self._save_compaction_transcript(trimmed)
                 self.compaction_state = trimmed
                 self._last_context_tokens = None
                 return "Context trimmed — oldest turns dropped (summary unavailable)"
         return None
+
+    def _save_compaction_transcript(self, state: _compaction.CompactionState) -> None:
+        if self._tool_result_spill_dir is None:
+            return
+        try:
+            self._tool_result_spill_dir.mkdir(parents=True, exist_ok=True)
+            path = self._tool_result_spill_dir / f"compacted-transcript-upto-{state.boundary_index:04d}.md"
+            path.write_text(_compaction.render_transcript(self.messages, state.boundary_index), encoding="utf-8", errors="replace")
+            state.transcript_path = str(path)
+        except OSError:
+            logging.getLogger(__name__).warning("could not save compaction transcript", exc_info=True)
+
 
     # -- helpers ----------------------------------------------------------------
     async def _astream(self):
@@ -1450,6 +1623,9 @@ class TurnEngine:
             return {"error": str(exc), "error_type": type(exc).__name__}, "error"
 
     def _record_result(self, tool_call: ToolCall, result: Any, status: str) -> Event:
+        spec = self.registry.get(tool_call.name)
+        if status == "ok" and isinstance(result, dict) and result.get("ok") and spec and getattr(spec.func, "__coworker_yields_turn__", False):
+            self._yield_for_wake = True
         self._step += 1
         if status == "ok":
             # Only successful calls: a write that raised left nothing on disk to run.
@@ -1476,6 +1652,7 @@ class TurnEngine:
                 **({"approval_note": origin["note"]} if origin.get("note") else {}),
                 **({"approval_grant": origin["grant"]} if origin.get("grant") else {}),
             }
+        result = self._bound_result(tool_call, result)
         message = _tool_result_message(tool_call, result)
         if display:
             message["_display"] = display
@@ -1593,7 +1770,7 @@ class TurnEngine:
             ) or {"approved": False, "error": "no response"}
 
         status = "ok" if result.get("approved") else "denied"
-        self.messages.append(_tool_result_message(tool_call, result))
+        self.messages.append(_tool_result_message(tool_call, self._bound_result(tool_call, result)))
         self._audit(
             tool_call,
             stage="finished",
@@ -1643,7 +1820,7 @@ class TurnEngine:
             ) or {"approved": False, "error": "no response"}
 
         status = "ok" if result.get("approved") else "denied"
-        self.messages.append(_tool_result_message(tool_call, result))
+        self.messages.append(_tool_result_message(tool_call, self._bound_result(tool_call, result)))
         self._audit(
             tool_call,
             stage="finished",
@@ -1710,7 +1887,7 @@ class TurnEngine:
             }
 
         status = "ok" if result.get("approved") else "denied"
-        self.messages.append(_tool_result_message(tool_call, result))
+        self.messages.append(_tool_result_message(tool_call, self._bound_result(tool_call, result)))
         self._audit(
             tool_call,
             stage="finished",
@@ -1807,7 +1984,7 @@ class TurnEngine:
                 )
 
         status = "ok" if result.get("installed") else "denied"
-        self.messages.append(_tool_result_message(tool_call, result))
+        self.messages.append(_tool_result_message(tool_call, self._bound_result(tool_call, result)))
         self._audit(
             tool_call,
             stage="finished",
@@ -1862,7 +2039,7 @@ class TurnEngine:
             }
 
         status = "ok" if result.get("granted") else "denied"
-        self.messages.append(_tool_result_message(tool_call, result))
+        self.messages.append(_tool_result_message(tool_call, self._bound_result(tool_call, result)))
         self._audit(
             tool_call,
             stage="finished",
@@ -1915,7 +2092,7 @@ class TurnEngine:
         status = "ok" if (result.get("answer") or result.get("answers")) else "denied"
         if status == "ok":
             self._note_ask_replies(result, question)
-        self.messages.append(_tool_result_message(tool_call, result))
+        self.messages.append(_tool_result_message(tool_call, self._bound_result(tool_call, result)))
         self._audit(
             tool_call,
             stage="finished",
@@ -1958,8 +2135,15 @@ class TurnEngine:
             if text:
                 self._ask_replies.append((anchor, text, q))
 
+    def _bound_result(self, tool_call: ToolCall, result: Any) -> Any:
+        self._result_sequence += 1
+        return toolresult.bound_tool_result(
+            result, max_bytes=self._tool_result_max_bytes, spill_dir=self._tool_result_spill_dir,
+            step=self._result_sequence, tool_name=tool_call.name,
+        )
+
     def _inject_steering(self) -> None:
-        for text, source in self._steering:
+        for text, source, activity in self._steering:
             message: dict[str, Any] = {
                 "role": "user",
                 "content": text,
@@ -1967,6 +2151,8 @@ class TurnEngine:
             }
             if source is not None:
                 message["source"] = source
+            if activity is not None:
+                message["_activity"] = activity
             self.messages.append(message)
         self._steering = []
 
@@ -1985,16 +2171,25 @@ class TurnEngine:
         # (thinking text), and `usage` (token counts) — copying only messages that carry
         # one. Whole `notice` messages (error/interrupted/model-switch markers) are
         # display-only too: dropped entirely.
-        _SIDECARS = ("source", "_display", "ts", "reasoning", "usage")
+        _SIDECARS = ("source", "_activity", "_display", "ts", "reasoning", "usage", "finish_reason", "max_output_tokens", "reasoning_effort", "served_by", "replay")
         # Auto-compaction (OPE-27): everything before the boundary is represented by the
         # compacted block. Outbound-only — the canonical history stays intact — and the
         # block+tail are byte-stable between turns, so prompt caching keeps working.
         source_messages = _compaction.apply_to_outbound(
             self.messages, self.compaction_state
         )
+        expanded = []
+        for msg in source_messages:
+            activity_text = (msg.get("_activity") or {}).get("text")
+            if activity_text:
+                expanded.append({"role": "assistant", "content": activity_text})
+            expanded.append(msg)
+        source_messages = expanded
         out = [
             (
-                {k: v for k, v in msg.items() if k not in _SIDECARS}
+                {"role": "assistant", "content": TRUNCATION_STUB}
+                if msg.get("replay") == "stub"
+                else {k: v for k, v in msg.items() if k not in _SIDECARS}
                 if any(s in msg for s in _SIDECARS)
                 else msg
             )
@@ -2084,7 +2279,24 @@ class TurnEngine:
         return out
 
 
-def _assistant_message(turn: AssistantTurn, model: Optional[str] = None) -> dict[str, Any]:
+def _effort_record(turn: AssistantTurn, setting: Optional[str]) -> Optional[dict[str, Any]]:
+    """What the run record says about reasoning effort for this reply (OPE-176): the
+    provider's own mapping when it reported one; otherwise, when a level was configured,
+    an explicit "requested but not reported" so the setting is never silently lost."""
+    if turn.effort:
+        return dict(turn.effort)
+    if setting:
+        return {
+            "requested": setting,
+            "effective": None,
+            "note": "provider did not report an effort parameter (no knob on this path)",
+        }
+    return None
+
+
+def _assistant_message(
+    turn: AssistantTurn, model: Optional[str] = None, effort_setting: Optional[str] = None
+) -> dict[str, Any]:
     message: dict[str, Any] = {
         "role": "assistant",
         "content": turn.text or "",
@@ -2095,6 +2307,28 @@ def _assistant_message(turn: AssistantTurn, model: Optional[str] = None) -> dict
         # stripped before provider calls. Tagged with the model that produced it so
         # per-model rollups survive mid-session model switches.
         message["usage"] = {"model": model, **turn.usage.as_dict()}
+    if turn.finish_reason:
+        # How the reply ended, in the engine's normalised vocabulary (`stop` /
+        # `tool_calls` / `length`; unknown provider values pass through). Persisted
+        # so a saved session can tell "chose to stop" from "hit the output limit"
+        # without re-deriving it from token counts (OPE-173). Omitted — never null —
+        # for partial turns and providers that report no stop reason. Stripped before
+        # every provider call (`_outbound_messages`). The provider's raw value, where
+        # it differs, lives in that provider's sidecar (e.g. `_anthropic.stop_reason`).
+        message["finish_reason"] = turn.finish_reason
+    if turn.output_limit:
+        # The per-reply output ceiling the provider actually sent (OPE-177), so a
+        # `length` finish can be read against the limit that produced it. Display
+        # sidecar like `usage`: stripped before every provider call.
+        message["max_output_tokens"] = turn.output_limit
+    effort_record = _effort_record(turn, effort_setting)
+    if effort_record:
+        # The reasoning-effort mapping for this reply (OPE-176). Display sidecar like
+        # `usage`: stripped before every provider call.
+        message["reasoning_effort"] = effort_record
+    if turn.served_by:
+        # The upstream host a router reported for this reply (display sidecar).
+        message["served_by"] = turn.served_by
     if turn.reasoning:
         # Display-only thinking text — rendered by the GUI, stripped for every provider
         # (`_outbound_messages`); provider-private replay blocks go via `extras` instead.
@@ -2113,6 +2347,7 @@ def _assistant_message(turn: AssistantTurn, model: Optional[str] = None) -> dict
             for tc in turn.tool_calls
         ]
     return message
+
 
 
 _MANGLED_PREVIEW_CHARS = 200

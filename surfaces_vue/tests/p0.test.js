@@ -7,10 +7,12 @@ import { ManualRuns } from "../src/manualRuns.js";
 test("compression: 80% becomes 0.8 and backend values round-trip", () => {
   const settings = settingsWithDefaults({ compaction_model: " test:model " });
   const payload = compactionPayload(80, settings);
-  assert.deepEqual(payload, { compaction_threshold_pct: 0.8, compaction_cap_tokens: 250000, compaction_model: "test:model" });
+  assert.deepEqual(payload, { compaction_threshold_pct: 0.8, compaction_cap_tokens: 250000, compaction_model: "test:model", compaction_summary_max_tokens: 16000 });
   assert.equal(payload.compaction_threshold_pct * 100, 80);
   for (const invalid of ["", null, NaN, 9, 96, 100]) assert.throws(() => compactionPayload(invalid, settings));
   assert.throws(() => compactionPayload(80, { ...settings, compaction_cap_tokens: 9999 }));
+  assert.throws(() => compactionPayload(80, { ...settings, compaction_summary_max_tokens: 0 }));
+  assert.equal(compactionPayload(80, { ...settings, compaction_summary_max_tokens: 24000 }).compaction_summary_max_tokens, 24000);
 });
 
 test("PDF: correct enums, numeric bounds and integer validation", () => {

@@ -142,7 +142,7 @@ class LocalExecutor(Executor):
         env: Optional[dict[str, str]] = None,
         shell_path: Optional[str] = None,
         default_timeout: float = _DEFAULT_TIMEOUT,
-        max_output_chars: int = 20_000,
+        max_output_chars: Optional[int] = None,
     ) -> None:
         self.cwd = str(Path(cwd).expanduser().resolve())
         self.default_timeout = default_timeout
@@ -294,7 +294,7 @@ class LocalExecutor(Executor):
             lines.append(item)
 
         output = "".join(lines)
-        truncated = len(output) > self.max_output_chars
+        truncated = self.max_output_chars is not None and len(output) > self.max_output_chars
         if truncated:
             # Keep the TAIL: builds and test runners put the verdict at the end.
             output = output[-self.max_output_chars :]
@@ -334,7 +334,7 @@ class LocalExecutor(Executor):
         if task is None:
             return {"error": f"unknown task: {task_id}"}
         output = task.read_new()
-        truncated = len(output) > self.max_output_chars
+        truncated = self.max_output_chars is not None and len(output) > self.max_output_chars
         if truncated:
             output = output[-self.max_output_chars :]
         exit_code = task.proc.poll()

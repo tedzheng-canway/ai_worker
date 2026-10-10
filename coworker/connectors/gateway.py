@@ -30,6 +30,8 @@ logger = logging.getLogger("coworker.connectors")
 
 _RECENT_CAP = 20  # most-recent distinct senders kept for chat-ID auto-capture
 
+APPROVAL_OWNER_REQUIRED = "Only a designated approval owner can respond to this request."
+
 
 class Gateway:
     def __init__(
@@ -93,9 +95,9 @@ class Gateway:
     async def reject_interaction(
         self,
         event: InteractionEvent,
-        text: str = "Only a designated approval owner can respond to this request.",
+        text: str = APPROVAL_OWNER_REQUIRED,
     ) -> None:
-        """Best-effort private feedback for a rejected Slack button click."""
+        """Best-effort feedback for a rejected remote approval."""
         response_url = str(event.response_url or "")
         parsed = urlparse(response_url)
         if (

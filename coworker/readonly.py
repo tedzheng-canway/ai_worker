@@ -47,7 +47,7 @@ _GIT_BRANCH_FLAG_OK = {
     "--merged", "--no-merged", "--all",
 }
 
-_FIND_BAD = ("-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fls", "-fprintf")
+_FIND_BAD = ("-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fls", "-fprintf")
 
 _ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=[^;&|<>`]*$")
 
@@ -56,13 +56,30 @@ _ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=[^;&|<>`]*$")
 _SED_WRITE = re.compile(r"(^|[;{])\s*[0-9,$/ ]*[wW]\s")
 
 
+def _has_unquoted_shell_variable(command: str) -> bool:
+    quote: str | None = None
+    escaped = False
+    for char in command:
+        if char == "$" and quote != "'":
+            return True
+        if escaped:
+            escaped = False
+        elif char == "\\" and quote != "'":
+            escaped = True
+        elif char == "'" and quote != '"':
+            quote = None if quote == "'" else "'"
+        elif char == '"' and quote != "'":
+            quote = None if quote == '"' else '"'
+    return False
+
+
 def _stages(command: str) -> list[list[str]] | None:
     """Tokenize with operators surfaced; split into pipeline stages. None = reject."""
     if not command or not command.strip():
         return None
-    # Substitutions can hide inside double quotes, which the tokenizer strips — check the
-    # raw text. Rejects a literal '$(' in a grep pattern too; that asymmetry is the point.
-    if "`" in command or "$(" in command or "<(" in command or ">(" in command:
+    # Expansion happens after classification and can introduce writing flags or commands.
+    # Single-quoted dollar signs are literal; substitutions remain conservatively denied.
+    if any(c in command for c in "\r\n\x00") or _has_unquoted_shell_variable(command) or "`" in command or "$(" in command or "<(" in command or ">(" in command:
         return None
     lex = shlex.shlex(command, posix=True, punctuation_chars=True)
     lex.whitespace_split = True
@@ -74,6 +91,8 @@ def _stages(command: str) -> list[list[str]] | None:
     for tok in tokens:
         if tok == "|":
             stages.append([])
+        elif tok and set(tok) <= {"(", ")"}:
+            return None  # PowerShell executes parenthesized expressions before argument passing
         elif tok in {";", "&", "&&", "||", "|&"} or (tok and set(tok) <= {">", "<", "&", "0", "1", "2"} and any(c in tok for c in "<>&")):
             return None  # every operator except a plain pipe rejects (incl. 2>, &>, <<)
         else:
@@ -123,6 +142,8 @@ def _stage_ok(argv: list[str]) -> bool:
     # Leading VAR=value assignments (LC_ALL=C grep …) are inert — skip them.
     i = 0
     while i < len(argv) and _ENV_ASSIGN.match(argv[i]):
+        if argv[i].split("=", 1)[0] not in {"LC_ALL", "LC_CTYPE", "LANG", "LANGUAGE"}:
+            return False  # PATH/loader/pager assignments can replace the command or run hooks
         i += 1
     argv = argv[i:]
     if not argv:
@@ -132,6 +153,19 @@ def _stage_ok(argv: list[str]) -> bool:
         return False  # path-invoked binaries can be anything; bare names only
     args = argv[1:]
     if head in _SIMPLE_SAFE:
+        if head == "sort" and any(t.startswith(("-o", "--output", "--compress-program")) for t in args):
+            return False
+        if head in {"rg", "ugrep"} and any(t.startswith(("--pre", "--hostname-bin", "--filter")) for t in args):
+            return False
+        if head == "date" and any(t.startswith(("-s", "--set")) for t in args):
+            return False
+        if head == "printf" and any(t.startswith("-v") for t in args):
+            return False
+        if head in {"uniq", "xxd"}:
+            if sum(not t.startswith("-") for t in args) > 1:
+                return False  # the second operand is an output file
+            if head == "xxd" and any(t.startswith("-r") for t in args):
+                return False
         return True
     if head == "env":
         return not args  # bare `env` prints; `env CMD` executes
@@ -142,9 +176,16 @@ def _stage_ok(argv: list[str]) -> bool:
     if head == "sed":
         if any(t.startswith(("-i", "--in-place", "-f", "--file")) for t in args):
             return False
-        return not any(_SED_WRITE.search(t) for t in args if not t.startswith("-"))
+        return not any(
+            _SED_WRITE.search(t) or re.search(r"\b[wWeErR]\b|(^|[;{}])\s*[0-9,$/ ]*[eErR]", t)
+            for t in args if not t.startswith("-")
+        )
     if head in {"awk", "gawk", "mawk", "nawk"}:
-        return not any(">" in t or "system" in t for t in args)
+        return not any(
+            ">" in t or "|" in t or "system" in t or "getline" in t or "@" in t
+            or t.startswith(("-f", "--file", "-i", "--include", "-l", "--load"))
+            for t in args
+        )
     if head == "find":
         return not any(t.startswith(_FIND_BAD) for t in args)
     return False

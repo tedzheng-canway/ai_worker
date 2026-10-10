@@ -9,6 +9,8 @@ workspace path. Other permission grants remain global-only.
 
 from __future__ import annotations
 
+import os
+
 try:
     import tomllib  # stdlib since 3.11
 except ModuleNotFoundError:  # 3.10, the floor requires-python declares
@@ -25,6 +27,12 @@ from .secrets import state_dir
 # `find -exec` and pytest collection). Keep the built-in list empty. A user may explicitly
 # opt into command prefixes in their user-owned global config, accepting that authority.
 DEFAULT_ALLOWED_COMMANDS: list[str] = []
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+MAX_OUTPUT_TOKENS_ENV = "COWORKER_MAX_OUTPUT_TOKENS"
+REASONING_EFFORT_ENV = "COWORKER_REASONING_EFFORT"
+TOOL_RESULT_MAX_BYTES_ENV = "COWORKER_TOOL_RESULT_MAX_BYTES"
+COMPACTION_CAP_TOKENS_ENV = "COWORKER_COMPACTION_CAP_TOKENS"
+COMPACTION_SUMMARY_MAX_TOKENS_ENV = "COWORKER_COMPACTION_SUMMARY_MAX_TOKENS"
 
 
 @dataclass
@@ -32,6 +40,11 @@ class Config:
     model: str = "gpt-5.6-sol"
     mode: str = "interactive"
     max_iterations: int = 150
+    max_output_tokens: Optional[int] = None
+    reasoning_effort: Optional[str] = None
+    tool_result_max_bytes: Optional[int] = None  # None = 10,000; 0 disables bounding
+    compaction_cap_tokens: Optional[int] = None
+    compaction_summary_max_tokens: Optional[int] = None  # None = 16,000
     allowed_commands: list[str] = field(
         default_factory=lambda: list(DEFAULT_ALLOWED_COMMANDS)
     )
@@ -79,6 +92,11 @@ _FIELDS = {
     "model",
     "mode",
     "max_iterations",
+    "max_output_tokens",
+    "reasoning_effort",
+    "tool_result_max_bytes",
+    "compaction_cap_tokens",
+    "compaction_summary_max_tokens",
     "allowed_commands",
     "auto_allow",
     "allowed_domains",
@@ -154,4 +172,26 @@ def load_config(
                         [*cfg.allowed_commands, *workspace_allowed_commands(workspace)]
                     )
                 )
+    for name, env_var, minimum in (
+        ("max_output_tokens", "COWORKER_MAX_OUTPUT_TOKENS", 1),
+        ("tool_result_max_bytes", "COWORKER_TOOL_RESULT_MAX_BYTES", 0),
+        ("compaction_cap_tokens", "COWORKER_COMPACTION_CAP_TOKENS", 1),
+        ("compaction_summary_max_tokens", "COWORKER_COMPACTION_SUMMARY_MAX_TOKENS", 1),
+    ):
+        value = getattr(cfg, name)
+        raw = (os.environ.get(env_var) or "").strip()
+        if raw:
+            try:
+                value = int(raw)
+            except ValueError:
+                raise ValueError(f"{env_var} must be an integer >= {minimum}") from None
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < minimum):
+            raise ValueError(f"{name} must be an integer >= {minimum}")
+        setattr(cfg, name, value)
+    effort = os.environ.get("COWORKER_REASONING_EFFORT", cfg.reasoning_effort)
+    if effort is not None:
+        effort = str(effort).strip().lower() or None
+        if effort is not None and effort not in {"none", "minimal", "low", "medium", "high", "xhigh", "max"}:
+            raise ValueError("invalid reasoning_effort")
+    cfg.reasoning_effort = effort
     return cfg

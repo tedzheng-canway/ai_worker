@@ -232,21 +232,30 @@ def fresh_access_token(secrets: SecretStore, config: Config) -> Optional[str]:
         return None
     if float(profile.get("expires") or 0) > _now():
         return profile["access_token"]
-    if not profile.get("refresh_token"):
-        return None
-    resp = httpx.post(
-        f"https://{config.cloud_auth_domain}/oauth/token",
-        data={
-            "grant_type": "refresh_token",
-            "client_id": config.cloud_client_id,
-            "refresh_token": profile["refresh_token"],
-        },
-        timeout=15,
-    )
-    if resp.status_code != 200:
-        return None
-    _store_cloud_tokens(secrets, resp.json())
-    return (secrets.get(CLOUD_AUTH_PROFILE) or {}).get("access_token")
+    # One renewal at a time, across processes (the app and each `openworker run` share
+    # this store). Read again inside the lock: whoever got here first has renewed it, and
+    # a second renewal with the refresh token it replaced could cancel the session.
+    with secrets.exclusive():
+        profile = secrets.get(CLOUD_AUTH_PROFILE) or {}
+        if not profile.get("access_token"):
+            return None
+        if float(profile.get("expires") or 0) > _now():
+            return profile["access_token"]
+        if not profile.get("refresh_token"):
+            return None
+        resp = httpx.post(
+            f"https://{config.cloud_auth_domain}/oauth/token",
+            data={
+                "grant_type": "refresh_token",
+                "client_id": config.cloud_client_id,
+                "refresh_token": profile["refresh_token"],
+            },
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return None
+        _store_cloud_tokens(secrets, resp.json())
+        return (secrets.get(CLOUD_AUTH_PROFILE) or {}).get("access_token")
 
 
 def fetch_me(secrets: SecretStore, config: Config) -> Optional[dict]:
@@ -439,9 +448,18 @@ def refresh_managed_token(
     that way. Manual profiles are never touched. `profile_key` targets an
     account-keyed profile (`gmail:account:<email>`); default = `<name>:default`."""
     key = profile_key or f"{connector}:default"
+    seen = secrets.get(key) or {}
+    with secrets.exclusive():
+        return _refresh_managed_token_locked(secrets, config, connector, key, seen)
+
+
+def _refresh_managed_token_locked(secrets, config, connector, key, seen):
     profile = secrets.get(key) or {}
     if not (profile.get("managed") and profile.get("refresh_token")):
         return None
+    if (profile.get("access_token") and profile.get("access_token") != seen.get("access_token")
+            and float(profile.get("expires") or 0) > _now()):
+        return profile
     provider = profile.get("provider") or PROVIDER_FOR_CONNECTOR.get(connector)
     token = fresh_access_token(secrets, config)
     if not provider or not token:

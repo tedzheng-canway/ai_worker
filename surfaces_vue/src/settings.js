@@ -7,7 +7,7 @@ export function settingsWithDefaults(settings) {
   return {
     sessions_peek: 5, context_bar: false, auto_approve: false,
     pdf_fallback: "text", pdf_max_pages: 20, pdf_max_mb: 10,
-    compaction_threshold_pct: 0.8, compaction_cap_tokens: 250000, compaction_model: "",
+    compaction_threshold_pct: 0.8, compaction_cap_tokens: 250000, compaction_model: "", compaction_summary_max_tokens: 16000,
     ...settings,
   };
 }
@@ -25,6 +25,7 @@ export function compactionPayload(percent, settings) {
     compaction_threshold_pct: boundedNumber(percent, 10, 95, "触发阈值") / 100,
     compaction_cap_tokens: boundedNumber(settings.compaction_cap_tokens, 10000, 2000000, "令牌上限", true),
     compaction_model: settings.compaction_model?.trim() || "",
+    compaction_summary_max_tokens: boundedNumber(settings.compaction_summary_max_tokens ?? 16000, 1, 200000, "摘要输出预算", true),
   };
 }
 

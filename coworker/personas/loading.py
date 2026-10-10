@@ -12,6 +12,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 from typing import Callable, Optional
+from urllib.parse import urlsplit
 
 from .manifest import PersonaManifest
 
@@ -69,13 +70,31 @@ def capability_set(m: PersonaManifest) -> set[str]:
     return caps
 
 
+def validate_git_url(url: str) -> str:
+    """Only fetch HTTPS repositories; never let an install URL select a git command."""
+    if not isinstance(url, str) or not url.startswith("https://"):
+        raise ValueError("persona git_url must be an https:// URL")
+    try:
+        parsed = urlsplit(url)
+        valid = bool(parsed.hostname) and parsed.port != 0
+    except ValueError:
+        valid = False
+    if not valid or any(c.isspace() or ord(c) < 32 for c in url):
+        raise ValueError("persona git_url must be a valid https:// URL")
+    return url
+
+
 def git_clone(
     url: str, dest: Path
 ) -> None:  # pragma: no cover - exercised via injection
     """Shallow-clone a persona repo. Injectable so tests don't touch the network."""
+    validate_git_url(url)
     dest.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["git", "clone", "--depth", "1", url, str(dest)],
+        [
+            "git", "-c", "protocol.allow=never", "-c", "protocol.https.allow=always",
+            "clone", "--depth", "1", "--", url, str(dest),
+        ],
         check=True,
         capture_output=True,
     )
@@ -95,6 +114,7 @@ def clone_persona_repo(
     url: str, base: Path, *, clone: Callable[[str, Path], None] = git_clone
 ) -> Path:
     """Clone (or reuse) a persona repo under ``base`` and return its directory."""
+    validate_git_url(url)
     dest = cache_dir_for(url, base)
     if not dest.is_dir():
         clone(url, dest)

@@ -1799,6 +1799,16 @@ def create_app(manager: SessionManager) -> FastAPI:
             str(body.get("user_id", "")), add=False
         )
 
+    @app.post("/v1/connectors/telegram/approval-owners/add")
+    def telegram_approval_owner_add(body: dict) -> dict[str, Any]:
+        return manager.set_telegram_approval_owner(
+            str(body.get("user_id", "")), add=True, display_name=str(body.get("name", ""))
+        )
+
+    @app.post("/v1/connectors/telegram/approval-owners/remove")
+    def telegram_approval_owner_remove(body: dict) -> dict[str, Any]:
+        return manager.set_telegram_approval_owner(str(body.get("user_id", "")), add=False)
+
     # -- audit / browser observability ------------------------------------------
     @app.get("/v1/audit")
     def audit_list(
@@ -1964,6 +1974,7 @@ def create_app(manager: SessionManager) -> FastAPI:
             threshold_pct=b.get("compaction_threshold_pct"),
             cap_tokens=b.get("compaction_cap_tokens"),
             model=b.get("compaction_model"),
+            summary_max_tokens=b.get("compaction_summary_max_tokens"),
         )
 
     @app.post("/v1/attachments/inspect-pdf")
@@ -2494,16 +2505,20 @@ def create_app(manager: SessionManager) -> FastAPI:
             "directory_requested",
             "plan_proposed",
             "iteration_end",
+            "compacted",
+            "continuation",
         }
 
-        async def run_turn(content, *, retry: bool = False, display=None) -> None:
+        async def run_turn(content, *, retry: bool = False, display=None, activity=None) -> None:
             # The receive loop atomically claims this session before scheduling the task.
             # Keeping the claim outside prevents two back-to-back frames from both starting.
             try:
+                if session_id in manager.wakes.stopped_sessions:
+                    return
                 events = (
-                    engine.retry()
+                    engine.retry(activity=activity)
                     if retry
-                    else engine.run(content, display=display)
+                    else engine.run(content, display=display, activity=activity)
                 )
                 async for event in events:
                     # Broadcast to every socket viewing this session (this socket included — it's a
@@ -2558,7 +2573,8 @@ def create_app(manager: SessionManager) -> FastAPI:
                     "This session is already running a turn. Wait for it to finish or stop it."
                 )
                 return
-            asyncio.create_task(run_turn(content, retry=retry, display=display))
+            activity = manager.prepare_activity(session_id, "user activity")
+            asyncio.create_task(run_turn(content, retry=retry, display=display, activity=activity))
 
         try:
             while True:
@@ -2643,7 +2659,7 @@ def create_app(manager: SessionManager) -> FastAPI:
                     else:
                         engine.approve_action_once(name, arguments or {})
                 elif kind == "interrupt":
-                    engine.request_interrupt()
+                    manager.stop_session(session_id)
                 elif kind == "retry":
                     # Re-run after a provider error (engine guards on the error-notice
                     # tail, so a stray frame is a no-op that still ends with turn_done).

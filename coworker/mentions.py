@@ -16,10 +16,13 @@ clears its records (same contract as subscriptions).
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -37,18 +40,36 @@ class MentionSessionStore:
         self._load()
 
     def _load(self) -> None:
-        if self.path and self.path.is_file():
+        if not self.path:
+            return
+        try:
+            if not self.path.is_file():
+                return
             data = json.loads(self.path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("mention state must be an object")
             self._threads = [MentionThread(**raw) for raw in data.get("threads", [])]
+        except (OSError, ValueError, TypeError, AttributeError):
+            logger.warning("mention state at %s is unreadable; starting empty", self.path)
+            self._threads = []
 
     def _save(self) -> None:
         if not self.path:
             return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(
-            json.dumps({"threads": [asdict(t) for t in self._threads]}, indent=2),
-            encoding="utf-8",
-        )
+        temporary = self.path.with_suffix(self.path.suffix + ".tmp")
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            temporary.write_text(
+                json.dumps({"threads": [asdict(t) for t in self._threads]}, indent=2),
+                encoding="utf-8",
+            )
+            temporary.replace(self.path)
+        except OSError as exc:
+            logger.warning("could not save %s: %s", self.path, exc)
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     # -- mutations --------------------------------------------------------------
     def set(self, thread_target: str, session_id: str, channel: str) -> MentionThread:

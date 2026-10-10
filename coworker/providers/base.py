@@ -71,6 +71,9 @@ class AssistantTurn:
     # Token counts for this round-trip, normalized across providers. None when the
     # backend didn't report usage (some compat servers) — never guessed.
     usage: Optional[TokenUsage] = None
+    output_limit: Optional[int] = None
+    effort: Optional[dict[str, Any]] = None
+    served_by: Optional[str] = None
 
     @property
     def has_tool_calls(self) -> bool:

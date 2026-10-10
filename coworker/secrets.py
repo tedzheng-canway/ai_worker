@@ -10,7 +10,9 @@ a Keychain / age-encrypted backend can swap in later without touching them.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import logging
 import os
 import re
 import subprocess
@@ -67,6 +69,17 @@ def _restrict_to_user(path: Path, *, is_dir: bool) -> None:
     icacls failure never blocks saving a key."""
     if _IS_WINDOWS:
         user = os.environ.get("USERNAME")
+        # Environment variables can still name the desktop user when the server runs
+        # under a restricted account. Apply the ACL to the process's actual identity.
+        try:
+            import ctypes
+
+            size = ctypes.c_ulong(256)
+            buffer = ctypes.create_unicode_buffer(size.value)
+            if ctypes.windll.advapi32.GetUserNameW(buffer, ctypes.byref(size)):
+                user = buffer.value
+        except (AttributeError, OSError):
+            pass
         if not user:
             return
         domain = os.environ.get("USERDOMAIN")
@@ -133,13 +146,96 @@ def write_private_text(path: str | Path, content: str) -> Path:
     return _atomic_private_write(Path(path).expanduser(), content)
 
 
+class _StoreLock:
+    """Reentrant per-file lock across store instances, threads, and processes."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path.with_name(path.name + ".lock")
+        self._thread = threading.RLock()
+        self._depth = 0
+        self._fh: Any = None
+
+    def acquire(self, timeout: float) -> None:
+        if not self._thread.acquire(timeout=max(0.0, timeout)):
+            raise TimeoutError("credential store is busy in another thread")
+        try:
+            if self._depth == 0:
+                self._fh = self._lock_file(timeout)
+            self._depth += 1
+        except BaseException:
+            self._thread.release()
+            raise
+
+    def release(self) -> None:
+        self._depth -= 1
+        try:
+            if self._depth == 0 and self._fh is not None:
+                fh, self._fh = self._fh, None
+                try:
+                    if _IS_WINDOWS:
+                        import msvcrt
+
+                        from .statelock import LOCK_OFFSET
+
+                        fh.seek(LOCK_OFFSET)
+                        msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                finally:
+                    fh.close()
+        finally:
+            self._thread.release()
+
+    def _lock_file(self, timeout: float) -> Any:
+        from .statelock import _try_lock
+
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fh = os.fdopen(os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600), "r+")
+        try:
+            _restrict_to_user(self.path, is_dir=False)
+            deadline = time.monotonic() + max(0.0, timeout)
+            while not _try_lock(fh):
+                if time.monotonic() >= deadline:
+                    # Never overwrite a peer's update or reuse a rotating refresh token.
+                    logging.getLogger(__name__).warning("credential store lock timed out: %s", self.path)
+                    raise TimeoutError("credential store is busy in another process")
+                time.sleep(0.05)
+            return fh
+        except BaseException:
+            fh.close()
+            raise
+
+
+_STORE_LOCKS: dict[str, _StoreLock] = {}
+_STORE_LOCKS_GUARD = threading.Lock()
+
+
+def _store_lock(path: Path) -> _StoreLock:
+    key = os.path.normcase(os.path.realpath(str(path)))
+    with _STORE_LOCKS_GUARD:
+        if key not in _STORE_LOCKS:
+            _STORE_LOCKS[key] = _StoreLock(Path(key))
+        return _STORE_LOCKS[key]
+
+
 class SecretStore:
     """File-backed secret store. Reads resolve `${VAR}` refs; status never leaks values."""
 
     def __init__(self, path: Optional[str | Path] = None) -> None:
         self.path = Path(path).expanduser() if path else state_dir() / "secrets.json"
         self._dotenv_path = self.path.parent / ".env"
-        self._lock = threading.Lock()
+        self._lock = _store_lock(self.path)
+
+    @contextlib.contextmanager
+    def exclusive(self, timeout: float = 30.0):
+        """Protect a whole read/refresh/write transaction, including nested put/delete."""
+        self._lock.acquire(timeout)
+        try:
+            yield self
+        finally:
+            self._lock.release()
 
     # -- reads ------------------------------------------------------------------
     def get(self, profile: str) -> Optional[dict[str, Any]]:
@@ -188,13 +284,13 @@ class SecretStore:
 
     # -- writes -----------------------------------------------------------------
     def put(self, profile: str, data: dict[str, Any]) -> None:
-        with self._lock:
+        with self.exclusive():
             store = self._read()
             store[profile] = data
             self._write(store)
 
     def delete(self, profile: str) -> bool:
-        with self._lock:
+        with self.exclusive():
             store = self._read()
             if profile not in store:
                 return False

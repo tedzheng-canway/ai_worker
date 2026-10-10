@@ -65,6 +65,7 @@ def environment_context(workspace: str | Path) -> str:
         f"Workspace: {ws}",
         f"Platform: {sys.platform} ({os_name})",
         f"Today's date: {date.today().isoformat()}",
+        "For the live date, time, or timezone, call current_time; this date is a session-start snapshot.",
         *_git_snapshot(ws),
     ]
     body = "\n".join(lines)

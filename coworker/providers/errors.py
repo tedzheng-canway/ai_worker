@@ -25,7 +25,6 @@ _NO_ACCESS = (
     "does not exist or you do not have access",
     "does not have access to model",
     "permission_error",
-    "permission denied",
 )
 _NO_QUOTA = (
     "insufficient_quota",
@@ -37,6 +36,8 @@ _NO_QUOTA = (
 
 def friendly_model_error(model: str, exc: Exception) -> Optional[str]:
     """One actionable sentence for "your account can't use this model" failures, or None."""
+    if isinstance(exc, PermissionError):
+        return None
     text = str(exc).lower()
     no_access = (
         f"Your account doesn't have access to {model} — new models can roll out "

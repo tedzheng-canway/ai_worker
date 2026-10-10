@@ -40,13 +40,23 @@ class SkillLoader:
             self._discover(directory)
 
     def _discover(self, directory: Path) -> None:
-        if not directory.is_dir():
+        # Rescanning is optional context discovery, so filesystem failures must not
+        # abort a running task. Isolate each skill as well as the directory listing.
+        try:
+            if not directory.is_dir():
+                return
+            entries = sorted(directory.iterdir())
+        except OSError:
             return
-        for sub in sorted(directory.iterdir()):
-            md = sub / "SKILL.md"
-            if md.is_file():
+        for sub in entries:
+            try:
+                md = sub / "SKILL.md"
+                if not md.is_file():
+                    continue
                 skill = _parse_skill(md)
-                self._skills[skill.name] = skill
+            except (OSError, UnicodeError, ValueError):
+                continue
+            self._skills[skill.name] = skill
 
     def names(self) -> list[str]:
         return list(self._skills)

@@ -37,7 +37,7 @@ async function start() {
   try {
     backend = spawn(executable, ['--host', '127.0.0.1', '--port', String(port)], {
       cwd: app.getPath('userData'), windowsHide: true, stdio: ['ignore', log, log],
-      env: { ...process.env, COWORKER_API_TOKEN: token, COWORKER_EXIT_WITH_PARENT: '1', COWORKER_PARENT_PID: String(process.pid) },
+      env: { ...process.env, COWORKER_API_TOKEN: token, COWORKER_EXIT_WITH_PARENT: '1', COWORKER_PARENT_PID: String(process.pid), COWORKER_STATE_LOCK: 'strict' },
     });
   } finally { fs.closeSync(log); }
   let failure;

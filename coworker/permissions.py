@@ -40,7 +40,7 @@ _INTERPRETERS = {
     "python", "python3", "node", "deno", "bun", "ruby", "perl", "php",
 }
 # Flags that turn a search/list tool into an execution or deletion tool.
-_DANGEROUS_FLAGS = {"-exec", "-execdir", "-delete", "-ok", "-okdir", "-fprintf"}
+_DANGEROUS_FLAGS = {"-exec", "-execdir", "-delete", "-ok", "-okdir", "-fprintf", "-fprint", "-fprint0", "-fls"}
 
 
 def _split_commands(command: str) -> list[str]:
