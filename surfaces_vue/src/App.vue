@@ -798,7 +798,7 @@ onBeforeUnmount(() => {
         <button :class="{ active: surface === 'settings' }" @click="surface = 'settings'"><span>⚙</span>{{ t("设置") }}</button>
       </nav>
       <footer class="sidebar-footer">
-        <button @click="toggleTheme">✧ {{ dark ? t("切换深黑外观") : t("切换石墨外观") }}</button>
+        <button @click="toggleTheme">◐ {{ dark ? t("切换石墨外观") : t("切换深灰外观") }}</button>
         <span :class="['connection-dot', { online: connected }]"></span><small>{{ t(status) }}</small>
       </footer>
     </aside>
@@ -827,7 +827,7 @@ onBeforeUnmount(() => {
       <p v-if="unattended" class="status-note">{{ t("无人值守已开启 · 待处理事项会保存在收件箱。") }}</p>
       <div ref="scroller" class="conversation" @scroll="trackScroll" @dragover.prevent @drop="dropFiles">
         <section v-if="!messages.length && !streaming" class="hero">
-          <div class="hero-mark">◇</div>
+          <div class="hero-mark" aria-hidden="true"><svg viewBox="0 0 40 40" fill="none"><path d="m20 3 17 17-17 17L3 20 20 3Z" stroke="currentColor" stroke-width="1.2"/><path d="m20 10 10 10-10 10-10-10 10-10Z" stroke="currentColor" stroke-opacity=".5" stroke-width="1.2"/><path d="M20 3v7m17 10h-7M20 37v-7M3 20h7" stroke="currentColor" stroke-opacity=".35"/></svg></div>
           <h1>{{ t("今天想完成什么？") }}</h1>
           <p>{{ t("选择 Coworker，然后描述任务。AIWorker 会在本地工作区中协助你。") }}</p>
           <div class="suggestions">
@@ -880,7 +880,7 @@ onBeforeUnmount(() => {
           <div v-if="attachments.length" class="attachments"><div v-for="(file,i) in attachments" :key="i" class="attachment"><img v-if="file.kind === 'image'" :src="file.data_url" :alt="file.name" /><details v-else-if="file.kind === 'text'"><summary>{{ file.name }}</summary><pre>{{ file.text.slice(0,4000) }}</pre></details><span v-else>{{ file.name }}</span><button type="button" :aria-label="(t(&quot;移除附件 &quot;) + (file.name))" @click="attachments.splice(i,1)">×</button></div></div>
           <div v-if="chosenSkill" class="skill-chip">/{{ chosenSkill }}<button :aria-label="t(&quot;取消技能&quot;)" @click="chosenSkill = ''">×</button></div>
           <div v-if="slashOpen" class="slash-menu" role="listbox" :aria-label="t(&quot;选择技能&quot;)"><button v-for="(skill,i) in slashSkills" :key="skill.name" :class="{active: i === skillIndex}" role="option" :aria-selected="i === skillIndex" @mousedown.prevent @click="chooseSkill(skill)">/{{ skill.name }} <small>{{ skill.description }}</small></button><p v-if="!slashSkills.length">{{ t("没有匹配的已启用技能，按 Esc 可发送普通文字。") }}</p></div>
-          <textarea v-model="draft" :disabled="!connected && !needsWorkspace" rows="1" :placeholder="needsWorkspace ? t(&quot;请先选择上方的工作目录&quot;) : connected ? t(&quot;描述任务，Enter 发送，Shift + Enter 换行&quot;) : t(&quot;等待本地服务连接…&quot;)" @keydown="keydown" @paste="pasteFiles"></textarea>
+          <textarea v-model="draft" :disabled="!connected && !needsWorkspace" rows="1" :aria-label="t('描述任务，Enter 发送，Shift + Enter 换行')" :placeholder="needsWorkspace ? t(&quot;请先选择上方的工作目录&quot;) : connected ? t(&quot;描述任务，Enter 发送，Shift + Enter 换行&quot;) : t(&quot;等待本地服务连接…&quot;)" @keydown="keydown" @paste="pasteFiles"></textarea>
           <div class="composer-toolbar">
             <div class="selectors">
               <button class="btn" :disabled="attaching" :title="t(&quot;添加附件&quot;)" @click="fileInput.click()">{{ attaching ? t("读取中…") : t("＋ 附件") }}</button><input ref="fileInput" type="file" multiple hidden @change="addFiles($event.target.files); $event.target.value = ''" />
