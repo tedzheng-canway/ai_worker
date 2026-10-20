@@ -21,6 +21,7 @@ import SettingsView from "./components/SettingsView.vue";
 import QuestionPrompt from "./components/QuestionPrompt.vue";
 import FolderDialog from "./components/FolderDialog.vue";
 import SelectMenu from "./components/SelectMenu.vue";
+import ChevronDown from "./components/ChevronDown.vue";
 import TokenUsage from "./components/TokenUsage.vue";
 import ToolTurnGroup from "./components/ToolTurnGroup.vue";
 import CompactionRecord from './components/CompactionRecord.vue';
@@ -873,7 +874,7 @@ onBeforeUnmount(() => {
       <footer class="composer-area">
         <p v-if="attachmentError" class="error-text" role="alert">{{ t(attachmentError) }}</p>
         <div v-if="requiresWorkspace && (needsWorkspace || !messages.length) && !running && !sessionId.startsWith('__run__')" class="session-setup" data-testid="setup-row">
-          <button class="workspace-chip" :class="{ required: needsWorkspace }" :title="workspace || t('选择工作目录')" :aria-label="t('选择工作目录')" @click="showWorkspacePicker"><span aria-hidden="true">▰</span><strong>{{ workspaceName || t("选择工作目录") }}</strong><span aria-hidden="true">⌄</span></button>
+          <button class="workspace-chip" :class="{ required: needsWorkspace }" :title="workspace || t('选择工作目录')" :aria-label="t('选择工作目录')" @click="showWorkspacePicker"><span aria-hidden="true">▰</span><strong>{{ workspaceName || t("选择工作目录") }}</strong><ChevronDown /></button>
           <small v-if="needsWorkspace">{{ t("先选择工作目录，再发送任务") }}</small>
         </div>
         <div class="composer" @dragover.prevent @drop="dropFiles">

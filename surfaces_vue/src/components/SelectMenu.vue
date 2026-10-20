@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from "vue";
+import ChevronDown from "./ChevronDown.vue";
 
 const props = defineProps({
   modelValue: { type: String, default: "" },
@@ -55,7 +56,7 @@ onUnmounted(() => document.removeEventListener("pointerdown", outside));
     <button type="button" class="select-trigger" :disabled="disabled" :aria-label="label" :aria-expanded="open" @click="show">
       <span class="select-icon">{{ icon }}</span>
       <span class="select-value">{{ current?.label || label }}</span>
-      <span class="select-arrow">⌄</span>
+      <ChevronDown class="select-arrow" />
     </button>
     <div v-if="open" class="select-popover" role="listbox">
       <template v-for="(option, index) in ordered" :key="option.value">
