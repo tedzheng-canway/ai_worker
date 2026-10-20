@@ -26,7 +26,8 @@ async function auditAppearance(page) {
         const css = getComputedStyle(el, pseudo);
         if (pseudo && ['none', 'normal'].includes(css.content)) continue;
         const name = `${el.tagName.toLowerCase()}.${el.classList.value.replaceAll(' ', '.')}${pseudo || ''}`;
-        if (css.backgroundImage !== 'none') violations.push(`${name}: background image ${css.backgroundImage}`);
+        const composerBlend = !pseudo && el.matches('.composer-area') && css.backgroundImage.startsWith('linear-gradient(');
+        if (css.backgroundImage !== 'none' && !composerBlend) violations.push(`${name}: background image ${css.backgroundImage}`);
         if (css.boxShadow !== 'none') violations.push(`${name}: shadow ${css.boxShadow}`);
         if (css.animationName !== 'none') violations.push(`${name}: animation ${css.animationName}`);
         for (const corner of ['borderTopLeftRadius', 'borderTopRightRadius', 'borderBottomLeftRadius', 'borderBottomRightRadius']) {

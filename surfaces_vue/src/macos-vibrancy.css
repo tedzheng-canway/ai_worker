@@ -200,7 +200,16 @@ html[data-style="macos-vibrancy"] body {
   .todo-progress, .compaction-record) {
   background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
 }
-#app .composer-area { padding: 16px clamp(20px, 4vw, 48px); border-top: 1px solid var(--line); background: var(--deep); }
+/* Let the transcript flow into the composer without a separate footer band. */
+#app .composer-area {
+  padding: 16px clamp(20px, 4vw, 48px);
+  border-top: 0;
+  background-color: var(--content);
+  background-image: linear-gradient(180deg,
+    var(--content) 0%,
+    color-mix(in srgb, var(--content) 90%, var(--deep)) 48%,
+    color-mix(in srgb, var(--content) 70%, var(--deep)) 100%) !important;
+}
 #app :is(.composer, .session-setup) { max-width: 800px; margin-left: auto; margin-right: auto; }
 #app .composer { padding: 4px; border: 1px solid var(--strong); border-radius: 12px; background: var(--deep); }
 #app .composer:focus-within { border-color: var(--focus); }
