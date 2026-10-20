@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { renderMarkdown, sandboxHtml, parseCsv } from '../src/markdown.js';
 import { attachmentKind, prepareAttachment } from '../src/attachments.js';
-import { historyItems } from '../src/history.js';
+import { historyItems, isUserInputEcho } from '../src/history.js';
 import { addUsage, usageTotals, normalizeTodos, transcriptGroups, turnRows } from '../src/sessionState.js';
 import { toolLine } from '../src/toolPresentation.js';
 
@@ -26,6 +26,33 @@ test('image-only history is retained and non-data image URLs are not replayed as
   const rows = historyItems([{role:'user', content:[{type:'image_url', image_url:{url:'data:image/png;base64,AA=='}}]}, {role:'user',content:[{type:'image_url',image_url:{url:'https://example.com/a.png'}}]}]);
   assert.equal(rows.length,1); assert.equal(rows[0].attachments[0].kind,'image');
 });
+test('structured image echoes match pending sends without losing distinct or remote messages', () => {
+  const image = {kind:'image',name:'shot.png',data_url:'data:image/png;base64,AA=='};
+  for (const text of ['', '看看图片']) {
+    const message = {kind:'user',text,sentInput:text,attachments:[image]};
+    const input = [...(text ? [{type:'text',text}] : []), {type:'image_url',image_url:{url:image.data_url}}];
+    assert.equal(isUserInputEcho(message,{input}),true);
+    assert.equal(isUserInputEcho(message,{input:[...input.slice(0,-1),{type:'image_url',image_url:{url:'data:image/png;base64,BB=='}}]}),false);
+    assert.equal(isUserInputEcho({...message,sentInput:undefined},{input}),false);
+    assert.equal(isUserInputEcho(message,{input:JSON.stringify(input)}),false);
+    const [restored] = historyItems([{role:'user',content:input}]);
+    assert.equal(restored.text,text);
+    assert.equal(restored.attachments[0].data_url,image.data_url);
+  }
+});
+
+test('echo matching covers mixed attachments and skill display text', () => {
+  const attachments = [{kind:'image',data_url:'data:image/png;base64,AA=='},{kind:'pdf',name:'doc.pdf',data_url:'data:application/pdf;base64,BB=='},{kind:'text',name:'note.txt',text:'notes'}];
+  const message = {text:'检查附件',sentInput:'检查附件',attachments};
+  const input = [{type:'text',text:'检查附件'},{type:'image_url',image_url:{url:attachments[0].data_url}},{type:'file',file:{filename:'doc.pdf',file_data:attachments[1].data_url}},{type:'text',text:'[Attached file: note.txt]\nnotes'}];
+  assert.equal(isUserInputEcho(message,{input}),true);
+  assert.equal(isUserInputEcho(message,{input:input.slice(0,-1)}),false);
+  assert.equal(isUserInputEcho({...message,text:'/report 检查附件'},{input:[{type:'text',text:'Use the skill "report" for this request'},...input.slice(1)],display:'/report 检查附件'}),true);
+  assert.equal(isUserInputEcho({text:'/report ',sentInput:'',attachments:[]},{input:'Use the skill "report" for this request',display:'/report'}),true);
+  const literal = JSON.stringify([{type:'text',text:'literal JSON'}]);
+  assert.equal(historyItems([{role:'user',content:literal}])[0].text,literal);
+});
+
 test('token totals retain per-model input/output/cache and tolerate malformed sidecars', () => {
   let usage = usageTotals([{role:'assistant',usage:{model:'a',input:100,output:20,cache_read:30}},{role:'assistant',usage:{model:'b',input:50}}]);
   usage = addUsage(usage,{model:'a',input:40,output:-3,cache_write:'10'});

@@ -3,7 +3,7 @@ import appLogo from '@app-logo';
 import { t } from './i18n';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { createTempWorkspace, deleteSession, finalizeAutomationRun, getHealth, getMessages, getPersonas, getSessions, getSettings, setSessionFlags, Session } from "./api";
-import { approvalMeta, assistantMeta, historyItems, truncatedText } from "./history";
+import { approvalMeta, assistantMeta, historyItems, isUserInputEcho, truncatedText } from "./history";
 import { contextUsage, historyUsage, settingsWithDefaults } from "./settings";
 import { ManualRuns } from "./manualRuns";
 import OnboardingView from './components/OnboardingView.vue';
@@ -217,7 +217,13 @@ function handleEvent(event) {
     streamReasoning.value = '';
     const lastUser = [...messages.value].reverse().find(item => item.kind === 'user');
     if (data.source?.connector) messages.value.push({kind:"connector",source:data.source,text:data.source.text || data.display || data.input || "",ts:data.source.ts});
-    else if (data.input && lastUser?.sentInput !== data.input && lastUser?.text !== data.input && lastUser?.text !== data.display) messages.value.push({ kind: "user", text: data.display || data.input });
+    else if (data.input && data.input !== '(resumed)') {
+      if (isUserInputEcho(lastUser, data)) delete lastUser.sentInput;
+      else {
+        const [item] = historyItems([{ role: 'user', content: data.input, _display: data.display }]);
+        if (item) messages.value.push(item);
+      }
+    }
   } else if (event.type === "assistant_delta") {
     streaming.value += data.text || "";
   } else if (event.type === 'reasoning_delta') {

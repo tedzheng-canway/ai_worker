@@ -9,6 +9,25 @@ export function contentText(content) {
   return content.filter((part) => part?.type === "text").map((part) => part.text).join("\n\n");
 }
 
+// Only an unacknowledged local send can be an echo. Compare the content parts
+// emitted by build_user_content, including attachments, rather than array identity.
+export function isUserInputEcho(message, data = {}) {
+  if (typeof message?.sentInput !== 'string') return false;
+  const files = message.attachments || [];
+  const text = [message.sentInput.trim(), ...files.filter(file => file.kind === 'text' && file.text)
+    .map(file => `[Attached file: ${file.name || 'attachment'}]\n${file.text.slice(0, 200000)}`)]
+    .filter(Boolean).join('\n\n');
+  const sameText = typeof data.display === 'string'
+    ? message.text.trim() === data.display
+    : text === contentText(data.input);
+  if (!sameText) return false;
+  const media = Array.isArray(data.input) ? data.input
+    .filter(part => part?.type === 'image_url' || part?.type === 'file')
+    .map(part => part.type === 'image_url' ? part.image_url?.url : part.file?.file_data) : [];
+  const sentMedia = files.filter(file => file.kind === 'image' || file.kind === 'pdf');
+  return media.length === sentMedia.length && media.every((url, index) => url === sentMedia[index].data_url);
+}
+
 export function approvalMeta(data = {}) {
   return {
     approvalOrigin: data.approval_origin || "",

@@ -182,7 +182,35 @@ function setup(state) {
    await page.locator('.composer textarea').evaluate((el,b64)=>{const dt=new DataTransfer();dt.items.add(new File([Uint8Array.from(atob(b64),c=>c.charCodeAt(0))],'paste.png',{type:'image/png'}));el.dispatchEvent(new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true}));},png.toString('base64'));
    await page.locator('.composer').evaluate(el=>{const dt=new DataTransfer();dt.items.add(new File(['drop'],'drop.txt',{type:'text/plain'}));el.dispatchEvent(new DragEvent('drop',{dataTransfer:dt,bubbles:true,cancelable:true}));});
    await expect(page.locator('.composer .attachment')).toHaveCount(3);await page.getByRole('button',{name:'发送',exact:true}).click();await expect.poll(()=>state.sent.filter(r=>r.type==='user_message').length).toBe(1);
-   const sent=state.sent.find(r=>r.type==='user_message');assert.equal(sent.text,'');assert.deepEqual(sent.attachments.map(a=>a.kind),['pdf','image','text']);await expect(page.locator('.message.user img')).toBeVisible();end(state);
+   const sent=state.sent.find(r=>r.type==='user_message');assert.equal(sent.text,'');assert.deepEqual(sent.attachments.map(a=>a.kind),['pdf','image','text']);await expect(page.locator('.message.user img')).toBeVisible();
+   await expect(page.locator('.message.user')).toHaveCount(1);await expect(page.locator('.user-bubble')).not.toContainText('data:');end(state);
+  });
+  await check('image messages render once on send, restore from history and appear in another live view',async({page,state})=>{
+   const imageUrl='data:image/png;base64,'+png.toString('base64');
+   const parts=[{type:'text',text:'请查看这张图片'},{type:'image_url',image_url:{url:imageUrl}}];
+   await page.locator('.composer input[type=file]').setInputFiles({name:'screenshot.png',mimeType:'image/png',buffer:png});
+   await page.locator('.composer textarea').fill('请查看这张图片');
+   await page.getByRole('button',{name:'发送',exact:true}).click();
+   await expect.poll(()=>state.sent.some(r=>r.type==='user_message')).toBe(true);
+   await expect(page.locator('.message.user')).toHaveCount(1);
+   await expect(page.locator('.user-bubble')).toHaveText('请查看这张图片');
+   await expect(page.locator('.message.user img')).toHaveAttribute('src',imageUrl);
+   end(state);
+   const route=state.extraRoute;
+   state.extraRoute=(url,body,req)=>url.pathname==='/v1/sessions/s1/messages'?{messages:[{role:'user',content:parts}]}:route(url,body,req);
+   await page.locator('.session-row').filter({hasText:'会话 2'}).click();
+   await page.locator('.session-row').filter({hasText:'会话 1'}).click();
+   await expect(page.locator('.message.user')).toHaveCount(1);
+   await expect(page.locator('.user-bubble')).toHaveText('请查看这张图片');
+   await expect(page.locator('.message.user img')).toHaveAttribute('src',imageUrl);
+   state.emit('s1','turn_start',{input:parts});
+   await expect(page.locator('.message.user')).toHaveCount(2);
+   await expect(page.locator('.user-bubble').last()).toHaveText('请查看这张图片');
+   await expect(page.locator('.message.user img').last()).toHaveAttribute('src',imageUrl);end(state);
+   state.emit('s1','turn_start',{input:[parts[1]]});
+   await expect(page.locator('.message.user')).toHaveCount(3);
+   await expect(page.locator('.message.user img')).toHaveCount(3);
+   await expect(page.locator('.user-bubble').last()).toBeEmpty();end(state);
   });
   await check('skill edit/import, session muting and explicit skill-only invocation',async({page,state})=>{
    await page.locator('.surface-nav').getByRole('button',{name:'设置'}).click();await page.locator('.subnav').getByRole('button',{name:'技能',exact:true}).click();

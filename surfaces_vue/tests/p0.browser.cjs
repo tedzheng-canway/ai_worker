@@ -81,7 +81,18 @@ async function fixture(browser, base, configure) {
     ws.onMessage((raw) => {
       const message = JSON.parse(raw);
       state.sent.push({ id, ...message });
-      if (message.type === 'user_message') ws.send(JSON.stringify({ type: 'turn_start', data: { input: message.text } }));
+      if (message.type === 'user_message') {
+        // Match build_user_content: attachment turns echo content parts, not just text.
+        const parts = message.text ? [{ type: 'text', text: message.text }] : [];
+        for (const attachment of message.attachments || []) {
+          if (attachment.kind === 'image') parts.push({ type: 'image_url', image_url: { url: attachment.data_url } });
+          else if (attachment.kind === 'pdf') parts.push({ type: 'file', file: { filename: attachment.name, file_data: attachment.data_url } });
+          else if (attachment.kind === 'text') parts.push({ type: 'text', text: `[Attached file: ${attachment.name}]\n${attachment.text}` });
+        }
+        const data = { input: message.attachments?.length ? parts : message.text };
+        if (message.skill) data.display = `/${message.skill}${message.text ? ` ${message.text}` : ''}`;
+        ws.send(JSON.stringify({ type: 'turn_start', data }));
+      }
     });
     ws.onClose(() => state.sockets.delete(id));
     ws.send(JSON.stringify({ type: 'ready', data: { running: false, model: state.sessions.find((s) => s.session_id === id)?.model || state.settings.model, mode: 'interactive', ...(state.ready || {}) } }));
