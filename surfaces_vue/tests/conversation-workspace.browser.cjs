@@ -151,7 +151,7 @@ function setup(state) {
    state.emit('s2','assistant_message',{text:'构建失败，已定位到入口模块缺失。'});
    await expect(page.locator('.assistant-copy')).toHaveCount(0);
    state.emit('s2','turn_done');
-   await expect(header).toHaveText('›3 步');await expect(group).toHaveAttribute('open','');
+   await expect(header).toHaveText('3 步');await expect(group).toHaveAttribute('open','');
    await expect(page.locator('.assistant-copy')).toHaveText('构建失败，已定位到入口模块缺失。');await expect(group).not.toContainText('构建失败，已定位到入口模块缺失。');
    await page.screenshot({path:path.join(__dirname,'../dist/tool-turns-desktop.png')});
    await page.getByTitle('收起侧边栏').click();await page.setViewportSize({width:390,height:844});

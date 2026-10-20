@@ -5,6 +5,7 @@ import { isDeclined, isToolRunning, turnRows } from '../sessionState';
 import MarkdownView from './MarkdownView.vue';
 import ToolStepRow from './ToolStepRow.vue';
 import ResponseMeta from './ResponseMeta.vue';
+import ChevronDown from './ChevronDown.vue';
 
 const props = defineProps({ items: { type: Array, required: true }, live: Boolean, streamingText: String, streamingReasoning: String, busy: Boolean, connected: Boolean });
 const emit = defineEmits(['allow-anyway']);
@@ -20,7 +21,7 @@ const liveLine = computed(() => props.streamingText || [...props.items].reverse(
 <template>
   <details class="tool-turn" :open="open" data-testid="turn-group">
     <summary class="turn-summary" :aria-expanded="open" @click.prevent="open = !open">
-      <span class="turn-chevron" :class="{ open }" aria-hidden="true">›</span>
+      <ChevronDown class="turn-chevron" :class="{ open }" />
       <span class="turn-count">{{ running ? t('正在执行 ') : '' }}{{ steps.length }} {{ t('步') }}{{ running ? '…' : '' }}</span>
       <span v-if="declined" class="turn-declined">· {{ declined }} {{ t('已拒绝') }}</span>
       <span v-if="hidden" class="turn-hidden">· {{ hidden }} {{ t('项已隐藏') }}</span>
@@ -49,8 +50,8 @@ const liveLine = computed(() => props.streamingText || [...props.items].reverse(
 .turn-summary::-webkit-details-marker { display: none; }
 .turn-summary:hover { color: var(--muted); }
 .turn-summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
-.turn-chevron { flex: none; font-size: 16px; transition: transform .15s; }
-.turn-chevron.open { transform: rotate(90deg); }
+.turn-chevron { transform: rotate(-90deg); transition: transform .15s; }
+.turn-chevron.open { transform: rotate(0deg); }
 .turn-count { flex: none; }
 .turn-declined { color: var(--danger); }
 .turn-hidden { color: #e2bd7c; }

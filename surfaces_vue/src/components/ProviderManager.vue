@@ -7,6 +7,7 @@ import { checked } from '../api-result.js';
 import { providerDefaults, providerPayload, visibleProviderFields } from '../provider-fields.js';
 import { KEY_HELP, providerRank } from '../providers/catalog';
 import ProviderMark from './ProviderMark.vue';
+import ChevronDown from './ChevronDown.vue';
 import ProviderField from './ProviderField.vue';
 import ProviderModels from './ProviderModels.vue';
 import LocalModels from './LocalModels.vue';
@@ -67,7 +68,7 @@ onBeforeUnmount(()=>{disposed=true;clearTimeout(timer);clearTimeout(returnTimer)
     <template v-else-if="!info">
       <div class="provider-gallery">
         <button v-for="p in ordered" :key="p.name" type="button" class="provider-card" :data-testid="`provider-${p.name}`" @click="open(p)">
-          <ProviderMark :name="p.name" :title="p.title" /><span class="provider-card-copy"><strong>{{ p.title }}</strong><small :class="{connected:p.signed_in || (p.configured&&p.needs_key) || tested.has(p.name)}">{{ status(p) }}</small><small v-if="!onboarding&&p.last_used_at" class="provider-last-used" :title="lastUsed(p)">{{ lastUsed(p) }}</small></span><span class="provider-chevron">›</span>
+          <ProviderMark :name="p.name" :title="p.title" /><span class="provider-card-copy"><strong>{{ p.title }}</strong><small :class="{connected:p.signed_in || (p.configured&&p.needs_key) || tested.has(p.name)}">{{ status(p) }}</small><small v-if="!onboarding&&p.last_used_at" class="provider-last-used" :title="lastUsed(p)">{{ lastUsed(p) }}</small></span><ChevronDown class="provider-chevron" />
         </button>
       </div>
       <p v-if="error" class="error-text" role="alert">{{ t(error) }}</p>
@@ -97,7 +98,7 @@ onBeforeUnmount(()=>{disposed=true;clearTimeout(timer);clearTimeout(returnTimer)
           <button v-if="!choice&&!commonFields.length" class="btn provider-test" data-provider-test :disabled="!canTest">{{ busy?'…':info.needs_key?t('测试'):t('检测') }}</button>
           <p v-if="info.needs_key&&KEY_HELP[info.name]" class="provider-help provider-key-help">{{ t('还没有密钥？') }} <a :href="KEY_HELP[info.name].url" target="_blank" rel="noopener noreferrer">{{ KEY_HELP[info.name].label }} ↗</a> {{ t('—— 大约一分钟。') }}</p>
           <p v-if="info.name==='ollama'" class="provider-help provider-key-help">{{ t('无需 API 密钥 —— Ollama 在本机运行模型。') }} <a href="https://ollama.com/download" target="_blank" rel="noopener noreferrer">{{ t('安装 Ollama') }} ↗</a></p>
-          <div v-if="endpoint" class="provider-endpoint"><button v-if="!endpointOpen" type="button" class="provider-back" @click="endpointOpen=true">{{ t('自定义端点') }} ⌄</button><ProviderField v-else :field="endpoint" :model-value="values[endpoint.key]" :saved="savedField===endpoint.key" @update:model-value="edit(endpoint.key,$event)" @blur="saveField(endpoint,$event)" /></div>
+          <div v-if="endpoint" class="provider-endpoint"><button v-if="!endpointOpen" type="button" class="provider-back" @click="endpointOpen=true"><span>{{ t('自定义端点') }}</span><ChevronDown /></button><ProviderField v-else :field="endpoint" :model-value="values[endpoint.key]" :saved="savedField===endpoint.key" @update:model-value="edit(endpoint.key,$event)" @blur="saveField(endpoint,$event)" /></div>
         </form>
       </fieldset>
       <div class="provider-feedback"><p v-if="error || info.last_error" class="error-text" role="alert">{{ t(error || info.last_error) }}</p><p v-else-if="message" role="status">{{ t(message) }}</p></div>

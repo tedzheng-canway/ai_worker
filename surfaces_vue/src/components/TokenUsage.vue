@@ -1,4 +1,5 @@
 <script setup>
+import ChevronDown from './ChevronDown.vue';
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { t } from '../i18n';
 
@@ -64,7 +65,7 @@ onBeforeUnmount(() => {
       </svg>
       <span class="usage-trigger-label">{{ usage ? t('上下文') : t('会话累计') }}</span>
       <strong>{{ showMeter ? `${percent}%` : compact(usage?.tokens ?? total) }}</strong>
-      <svg class="usage-chevron" :class="{ open }" width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m3 7 3-3 3 3" /></svg>
+      <ChevronDown class="usage-chevron" :class="{ open }" />
     </button>
 
     <section v-if="open" class="usage-popover" role="region" :aria-label="t('Token 用量详情')" data-testid="usage-popover">
@@ -137,8 +138,8 @@ onBeforeUnmount(() => {
 .usage-ring-track { stroke: var(--strong); }
 .usage-ring-fill { stroke: var(--usage-tone); transition: stroke-dasharray .25s ease, stroke .25s; }
 .usage-icon { width: 18px; height: 18px; color: var(--accent); }
-.usage-chevron { color: var(--faint); transition: transform .15s; }
-.usage-chevron.open { transform: rotate(180deg); }
+.usage-chevron { color: var(--faint); transform: rotate(180deg); transition: transform .15s; }
+.usage-chevron.open { transform: rotate(0deg); }
 .usage-popover {
   position: absolute; bottom: calc(100% + 10px); right: 0; z-index: 85;
   width: min(340px, calc(100vw - 24px)); max-height: min(520px, calc(100dvh - 180px)); overflow-y: auto;

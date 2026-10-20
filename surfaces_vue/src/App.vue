@@ -780,7 +780,7 @@ onBeforeUnmount(() => {
         </section>
         <div v-if="!recentSessions.length && !archivedSessions.length" class="empty-side">{{ t("还没有历史对话") }}</div>
         <div v-if="archivedSessions.length" class="archived-section">
-          <button class="archived-toggle" @click="showArchived = !showArchived"><span>{{ showArchived ? '⌄' : '›' }}</span>{{ t("已归档（") }}{{ archivedSessions.length }}）</button>
+          <button class="archived-toggle" :aria-expanded="showArchived" @click="showArchived = !showArchived"><ChevronDown />{{ t("已归档（") }}{{ archivedSessions.length }}）</button>
           <div v-if="showArchived">
             <div v-for="item in shownArchived" :key="item.session_id" class="session-row-wrap">
               <button class="session-row archived-row" @click="selectSession(item)"><span class="session-icon">◇</span><span class="session-copy"><strong>{{ item.title || t("未命名对话") }}</strong><small>{{ item.agent }} · {{ compactAge(item.updated_at) }}</small></span></button>
