@@ -292,8 +292,9 @@ html[data-style="macos-vibrancy"] body {
 #app .channel-options button { background: transparent; border-color: transparent; }
 #app :is(.dialog-overlay, .folder-overlay, .modal-overlay, .modal-backdrop) { background: var(--scrim); -webkit-backdrop-filter: blur(24px); backdrop-filter: blur(24px); }
 #app .dialog-overlay { z-index: 100; }
-#app .detail-panel { padding: 20px; border: 0; border-left: 1px solid var(--line); background: var(--paper); }
-#app .detail-panel > header { min-height: 64px; margin: -20px -20px 16px; padding: 16px 20px; background: var(--panel); border-bottom: 1px solid var(--line); }
+/* Let sticky headers start at the scroll edge without a top padding gap. */
+#app .detail-panel { padding: 0 20px 20px; border: 0; border-left: 1px solid var(--line); background: var(--paper); }
+#app .detail-panel > header { min-height: 64px; margin: 0 -20px 16px; padding: 16px 20px; background: var(--panel); border-bottom: 1px solid var(--line); }
 #app .access-panel h3 { font-size: 15px; letter-spacing: 0; }
 #app .access-panel .actions { flex-wrap: wrap; }
 #app .access-panel .btn { border-radius: 8px; }
